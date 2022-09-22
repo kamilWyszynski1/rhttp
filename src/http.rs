@@ -82,7 +82,7 @@ pub enum ResponseStatus {
 }
 
 impl ResponseStatus {
-    fn get_code_message(&self) -> (u16, String) {
+    pub fn get_code_message(&self) -> (u16, String) {
         match *self {
             ResponseStatus::Ok => (200, "OK".into()),
             ResponseStatus::Created => (201, "Created".into()),
@@ -91,53 +91,6 @@ impl ResponseStatus {
             ResponseStatus::NotFound => (404, "Not Found".into()),
             ResponseStatus::InternalServerError => (500, "Internal Server Error".into()),
         }
-    }
-}
-
-/// Responses consist of the following elements:
-///
-/// * The version of the HTTP protocol they follow.
-/// * A status code, indicating if the request was successful or not, and why.
-/// * A status message, a non-authoritative short description of the status code.
-/// * HTTP headers, like those for requests.
-/// * Optionally, a body containing the fetched resource.
-#[derive(Debug, Clone)]
-pub struct Response {
-    pub protocol: ProtocolVersion,
-    pub status: ResponseStatus,
-    pub headers: HashMap<String, String>,
-    pub body: Option<String>,
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<Vec<u8>> for Response {
-    fn into(self) -> Vec<u8> {
-        use std::fmt::Write as _; // import without risk of name clashing
-
-        let mut buf = String::new();
-
-        let (status_code, status_message) = self.status.get_code_message();
-
-        let _ = write!(
-            &mut buf,
-            "{} {} {}",
-            self.protocol, status_code, status_message
-        );
-
-        buf.push_str("\n");
-
-        for (k, v) in self.headers {
-            let _ = writeln!(&mut buf, "{}: {}", k, v);
-        }
-
-        if let Some(body) = self.body {
-            buf.push_str("\n\n");
-            buf.push_str(body.as_str())
-        }
-
-        debug!("response string: {}", buf);
-
-        buf.into_bytes()
     }
 }
 
@@ -250,7 +203,7 @@ impl Request {
         }
 
         // parse headers
-        while let Some(next) = lines.next() {
+        for next in lines.by_ref() {
             if next.is_empty() {
                 break;
             }
@@ -268,7 +221,7 @@ impl Request {
 
         // parse body
         let mut body = String::new();
-        while let Some(next) = lines.next() {
+        for next in lines {
             if next.is_empty() {
                 break;
             }

@@ -1,16 +1,18 @@
-use anyhow::{bail, Context};
-use log::{debug, error, info};
+use anyhow::Context;
+use log::error;
 use std::{
-    any,
     collections::HashMap,
-    fmt::{Debug, Display},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::Arc,
     thread,
 };
 
-use crate::http::{Method, ProtocolVersion, Request, Response, ResponseStatus};
+use crate::{
+    http::{Method, ProtocolVersion, Request, ResponseStatus},
+    middleware::Middleware,
+    response::Response,
+};
 
 type InnerHandler = Box<dyn Fn(Request) -> anyhow::Result<Response> + Send + Sync>;
 type Handler = Arc<InnerHandler>;
@@ -25,7 +27,11 @@ pub struct Server {
     host: String,
     port: u32,
 
+    /// Registered routes.
     routes: HashMap<Method, Vec<Route>>,
+
+    /// Registered middlewares that will be run during request handling.
+    middlewares: Vec<Box<dyn Middleware>>,
 }
 
 impl Server {
@@ -34,24 +40,31 @@ impl Server {
             host: host.into(),
             port,
             routes: HashMap::new(),
+            middlewares: vec![],
         }
     }
 
     /// Starts server,
-    pub fn run(&self) -> anyhow::Result<()> {
+    pub fn run(self) -> anyhow::Result<()> {
         let listener = TcpListener::bind(format!("{}:{}", self.host, self.port))?;
 
+        let server = Arc::new(self);
+
         for stream in listener.incoming() {
-            if let Err(e) = self.handle(stream?) {
-                error!("got error during handling connection: {}", e);
-            }
+            let stream = stream?;
+            let s = server.clone();
+            thread::spawn(move || {
+                if let Err(e) = s.handle(stream) {
+                    error!("got error during handling connection: {}", e);
+                }
+            });
         }
         Ok(())
     }
 
     // Calls route's handler and pass response to function that writes to opened stream.
     fn handle(&self, mut stream: TcpStream) -> anyhow::Result<()> {
-        let request = parse_request_from_tcp(&mut stream)?;
+        let mut request = parse_request_from_tcp(&mut stream)?;
         let route = self
             .routes
             .get(&request.method)
@@ -61,13 +74,35 @@ impl Server {
             .context("no matching route")?
             .clone();
 
-        thread::spawn(move || handle_connection_http(stream, (route.handler)(request)));
+        for m in &self.middlewares {
+            m.on_request(&mut request)?;
+        }
+
+        let mut response = match (route.handler)(request) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("handle_connection_http - error: {}", e);
+                Response {
+                    protocol: ProtocolVersion::HTTP10,
+                    status: ResponseStatus::InternalServerError,
+                    headers: HashMap::new(),
+                    body: None,
+                }
+            }
+        };
+
+        for m in &self.middlewares {
+            m.on_response(&mut response)?;
+        }
+
+        let response_bytes: Vec<u8> = response.into();
+        stream.write_all(&response_bytes)?;
 
         Ok(())
     }
 
     /// Registers GET route.
-    pub fn get<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    pub fn get<S, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
         H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
@@ -80,7 +115,7 @@ impl Server {
     }
 
     /// Registers POST route.
-    pub fn post<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    pub fn post<S, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
         H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
@@ -92,7 +127,7 @@ impl Server {
         self
     }
     /// Registers PUT route.
-    pub fn put<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    pub fn put<S, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
         H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
@@ -104,7 +139,7 @@ impl Server {
         self
     }
     /// Registers DELETE route.
-    pub fn delete<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    pub fn delete<S, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
         H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
@@ -113,6 +148,14 @@ impl Server {
             path: path.into(),
             handler: Arc::new(Box::new(handler)),
         });
+        self
+    }
+
+    pub fn middleware<M>(mut self, m: M) -> Self
+    where
+        M: Middleware + 'static,
+    {
+        self.middlewares.push(Box::new(m));
         self
     }
 }
@@ -141,29 +184,4 @@ fn parse_request_from_tcp(stream: &mut TcpStream) -> anyhow::Result<Request> {
     }
 
     Request::parse(String::from_utf8(received)?)
-}
-
-fn handle_connection_http(
-    mut stream: TcpStream,
-    response: anyhow::Result<Response>,
-) -> anyhow::Result<()> {
-    info!("responding with: {:?}", response);
-
-    let response = match response {
-        Ok(r) => r,
-        Err(e) => {
-            error!("handle_connection_http - error: {}", e);
-            Response {
-                protocol: ProtocolVersion::HTTP10,
-                status: ResponseStatus::InternalServerError,
-                headers: HashMap::new(),
-                body: None,
-            }
-        }
-    };
-
-    let response_bytes: Vec<u8> = response.into();
-    stream.write_all(&response_bytes)?;
-
-    Ok(())
 }
