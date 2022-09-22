@@ -1,8 +1,12 @@
 use std::collections::HashMap;
 
+use http::{Request, Response};
 use log::info;
-use server::{Request, Response};
 
+use crate::http::{ProtocolVersion, ResponseStatus};
+
+mod http;
+mod outcome;
 mod server;
 
 fn main() -> anyhow::Result<()> {
@@ -15,9 +19,9 @@ fn test(req: Request) -> anyhow::Result<Response> {
     info!("test - request that we've got: {:?}", req);
     info!("responding");
     Ok(Response {
-        status: server::ResponseStatus::Ok,
+        status: ResponseStatus::Ok,
         headers: HashMap::new(),
-        protocol: server::ProtocolVersion::HTTP11,
+        protocol: ProtocolVersion::HTTP11,
         body: Some(String::from("response")),
     })
 }
