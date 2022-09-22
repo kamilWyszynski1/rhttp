@@ -1,20 +1,17 @@
-use anyhow::bail;
-use log::debug;
+use anyhow::{bail, Context};
+use log::{debug, error, info};
 use std::{
     any,
     collections::HashMap,
     fmt::{Debug, Display},
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    sync::Arc,
     thread,
 };
-pub struct EchoServer {
-    host: String,
-    port: u32,
-}
 
-#[derive(PartialEq, Eq)]
-enum ProtocolVersion {
+#[derive(PartialEq, Copy, Clone, Eq)]
+pub enum ProtocolVersion {
     HTTP10,
     HTTP11,
     HTTP2,
@@ -62,8 +59,8 @@ impl Debug for ProtocolVersion {
 /// significant digit. See [`StatusCode::is_success`], etc. Values above 599
 /// are unclassified but allowed for legacy compatibility, though their use is
 /// discouraged. Applications may interpret such values as protocol errors.
-#[derive(Debug)]
-enum ResponseStatus {
+#[derive(Debug, Clone, Copy)]
+pub enum ResponseStatus {
     /// 200 OK
     /// [[RFC7231, Section 6.3.1](https://tools.ietf.org/html/rfc7231#section-6.3.1)]
     Ok,
@@ -83,7 +80,10 @@ enum ResponseStatus {
     /// 404 Not Found
     /// [[RFC7231, Section 6.5.4](https://tools.ietf.org/html/rfc7231#section-6.5.4)]
     NotFound,
-    //TODO: implement rest of response codes.
+
+    /// 500 Internal Server Error
+    /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500
+    InternalServerError,
 }
 
 impl ResponseStatus {
@@ -94,6 +94,7 @@ impl ResponseStatus {
             ResponseStatus::BadRequest => (400, "Bad Request".into()),
             ResponseStatus::Forbidden => (403, "Forbidden".into()),
             ResponseStatus::NotFound => (404, "Not Found".into()),
+            ResponseStatus::InternalServerError => (500, "Internal Server Error".into()),
         }
     }
 }
@@ -105,12 +106,12 @@ impl ResponseStatus {
 /// * A status message, a non-authoritative short description of the status code.
 /// * HTTP headers, like those for requests.
 /// * Optionally, a body containing the fetched resource.
-#[derive(Debug)]
-struct Response {
-    protocol: ProtocolVersion,
-    status: ResponseStatus,
-    headers: HashMap<String, String>,
-    body: Option<String>,
+#[derive(Debug, Clone)]
+pub struct Response {
+    pub protocol: ProtocolVersion,
+    pub status: ResponseStatus,
+    pub headers: HashMap<String, String>,
+    pub body: Option<String>,
 }
 
 #[allow(clippy::from_over_into)]
@@ -151,7 +152,7 @@ impl Into<Vec<u8>> for Response {
 /// common features are shared by a group of them: e.g. a request method can be safe, idempotent, or cacheable.
 ///
 /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum Method {
     /// The HTTP GET method requests a representation of the specified resource.
     /// Requests using GET should only be used to request data (they shouldn't include data).
@@ -197,8 +198,8 @@ impl TryFrom<&str> for Method {
 /// Representation of HTTP Request.
 ///
 /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#body
-#[derive(Debug, PartialEq, Eq)]
-struct Request {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
     /// An HTTP method, a verb (like GET, PUT or POST) or a noun (like HEAD or OPTIONS), that describes
     /// the action to be performed. For example, GET indicates that a resource should be fetched or POST means
     /// that data is pushed to the server (creating or modifying a resource, or generating a temporary document to send back).
@@ -249,6 +250,7 @@ impl Request {
 
             if let Some(rest) = request_line.next() {
                 request.version = rest.trim().try_into()?;
+                debug!("version: {}", request.version);
             }
         }
 
@@ -285,30 +287,113 @@ impl Request {
     }
 }
 
-impl EchoServer {
+type InnerHandler = Box<dyn Fn(Request) -> anyhow::Result<Response> + Send + Sync>;
+type Handler = Arc<InnerHandler>;
+
+#[derive(Clone)]
+struct Route {
+    path: String,
+    pub handler: Handler,
+}
+
+pub struct Server {
+    host: String,
+    port: u32,
+
+    routes: HashMap<Method, Vec<Route>>,
+}
+
+impl Server {
     pub fn new(host: impl Into<String>, port: u32) -> Self {
         Self {
             host: host.into(),
             port,
+            routes: HashMap::new(),
         }
     }
 
+    /// Starts server,
     pub fn run(&self) -> anyhow::Result<()> {
         let listener = TcpListener::bind(format!("{}:{}", self.host, self.port))?;
 
         for stream in listener.incoming() {
-            let stream = stream?;
-            thread::spawn(move || {
-                handle_connection_http(stream).expect("could not handle connection")
-            });
+            if let Err(e) = self.handle(stream?) {
+                error!("got error during handling connection: {}", e);
+            }
         }
         Ok(())
     }
+
+    // Calls route's handler and pass response to function that writes to opened stream.
+    fn handle(&self, mut stream: TcpStream) -> anyhow::Result<()> {
+        let request = parse_request_from_tcp(&mut stream)?;
+        let route = self
+            .routes
+            .get(&request.method)
+            .with_context(|| format!("not registered routes for {:?} method", request.method))?
+            .iter()
+            .find(|route| route.path == request.url)
+            .context("no matching route")?
+            .clone();
+
+        thread::spawn(move || handle_connection_http(stream, (route.handler)(request)));
+
+        Ok(())
+    }
+
+    /// Registers GET route.
+    pub fn get<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    where
+        S: Into<String>,
+        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+    {
+        self.routes.entry(Method::Get).or_default().push(Route {
+            path: path.into(),
+            handler: Arc::new(Box::new(handler)),
+        });
+        self
+    }
+
+    /// Registers POST route.
+    pub fn post<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    where
+        S: Into<String>,
+        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+    {
+        self.routes.entry(Method::Post).or_default().push(Route {
+            path: path.into(),
+            handler: Arc::new(Box::new(handler)),
+        });
+        self
+    }
+    /// Registers PUT route.
+    pub fn put<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    where
+        S: Into<String>,
+        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+    {
+        self.routes.entry(Method::Put).or_default().push(Route {
+            path: path.into(),
+            handler: Arc::new(Box::new(handler)),
+        });
+        self
+    }
+    /// Registers DELETE route.
+    pub fn delete<S, H>(&mut self, path: S, handler: H) -> &mut Self
+    where
+        S: Into<String>,
+        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+    {
+        self.routes.entry(Method::Delete).or_default().push(Route {
+            path: path.into(),
+            handler: Arc::new(Box::new(handler)),
+        });
+        self
+    }
 }
 
-const MESSAGE_SIZE: usize = 1024;
-
-fn handle_connection_http(mut stream: TcpStream) -> anyhow::Result<()> {
+/// Takes TcpStream, reads whole content and parses it to a http request.
+fn parse_request_from_tcp(stream: &mut TcpStream) -> anyhow::Result<Request> {
     // Store all the bytes for our received String
     let mut received: Vec<u8> = vec![];
 
@@ -328,27 +413,35 @@ fn handle_connection_http(mut stream: TcpStream) -> anyhow::Result<()> {
         }
     }
 
-    let request = Request::parse(String::from_utf8(received)?)?;
+    Request::parse(String::from_utf8(received)?)
+}
 
-    debug!("{:?}", request);
+fn handle_connection_http(
+    mut stream: TcpStream,
+    response: anyhow::Result<Response>,
+) -> anyhow::Result<()> {
+    info!("responding with: {:?}", response);
 
-    let response = Response {
-        protocol: ProtocolVersion::HTTP10,
-        status_code: 200,
-        status_message: "OK".into(),
-        headers: HashMap::from([
-            ("Content-Type".into(), "text/html".into()),
-            ("Server".into(), "My Own".into()),
-        ]),
-        body: None,
+    let response = match response {
+        Ok(r) => r,
+        Err(e) => {
+            error!("handle_connection_http - error: {}", e);
+            Response {
+                protocol: ProtocolVersion::HTTP10,
+                status: ResponseStatus::InternalServerError,
+                headers: HashMap::new(),
+                body: None,
+            }
+        }
     };
-
-    println!("responding with: {:?}", response);
 
     let response_bytes: Vec<u8> = response.into();
     stream.write_all(&response_bytes)?;
+
     Ok(())
 }
+
+const MESSAGE_SIZE: usize = 1024;
 
 #[cfg(test)]
 mod tests {

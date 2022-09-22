@@ -1,0 +1,9 @@
+base: "http://localhost:8080"
+iterations: 1000
+concurrency: 100
+rampup: 3
+
+plan:
+  - name: Test
+    request:
+      url: /
