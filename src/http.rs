@@ -1,9 +1,5 @@
 use anyhow::bail;
-use log::debug;
-use std::{
-    collections::HashMap,
-    fmt::{Debug, Display},
-};
+use std::fmt::{Debug, Display};
 
 #[derive(PartialEq, Copy, Clone, Eq)]
 pub enum ProtocolVersion {
@@ -61,7 +57,7 @@ impl Debug for ProtocolVersion {
 /// are unclassified but allowed for legacy compatibility, though their use is
 /// discouraged. Applications may interpret such values as protocol errors.
 #[derive(Debug, Clone, Copy)]
-pub enum ResponseStatus {
+pub enum Status {
     /// 200 OK
     /// [[RFC7231, Section 6.3.1](https://tools.ietf.org/html/rfc7231#section-6.3.1)]
     Ok,
@@ -87,15 +83,15 @@ pub enum ResponseStatus {
     InternalServerError,
 }
 
-impl ResponseStatus {
+impl Status {
     pub fn get_code_message(&self) -> (u16, String) {
         match *self {
-            ResponseStatus::Ok => (200, "OK".into()),
-            ResponseStatus::Created => (201, "Created".into()),
-            ResponseStatus::BadRequest => (400, "Bad Request".into()),
-            ResponseStatus::Forbidden => (403, "Forbidden".into()),
-            ResponseStatus::NotFound => (404, "Not Found".into()),
-            ResponseStatus::InternalServerError => (500, "Internal Server Error".into()),
+            Status::Ok => (200, "OK".into()),
+            Status::Created => (201, "Created".into()),
+            Status::BadRequest => (400, "Bad Request".into()),
+            Status::Forbidden => (403, "Forbidden".into()),
+            Status::NotFound => (404, "Not Found".into()),
+            Status::InternalServerError => (500, "Internal Server Error".into()),
         }
     }
 }
@@ -152,137 +148,5 @@ impl TryFrom<&str> for Method {
             "PUT" => Ok(Self::Put),
             _ => bail!("invalid http method: {}", value),
         }
-    }
-}
-
-/// Representation of HTTP Request.
-///
-/// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#body
-#[derive(Default, Debug, Clone, PartialEq, Eq)]
-pub struct Request {
-    /// An HTTP method, a verb (like GET, PUT or POST) or a noun (like HEAD or OPTIONS), that describes
-    /// the action to be performed. For example, GET indicates that a resource should be fetched or POST means
-    /// that data is pushed to the server (creating or modifying a resource, or generating a temporary document to send back).
-    pub method: Method,
-
-    /// The request target, usually a URL, or the absolute path of the protocol, port,
-    /// and domain are usually characterized by the request context. The format of this
-    /// request target varies between different HTTP methods.
-    pub url: String,
-
-    /// The HTTP version, which defines the structure of the remaining message,
-    /// acting as an indicator of the expected version to use for the response.
-    pub version: ProtocolVersion,
-
-    /// HTTP headers from a request follow the same basic structure of an HTTP header:
-    /// a case-insensitive string followed by a colon (':') and a value whose structure depends
-    /// upon the header. The whole header, including the value, consist of one single line, which can be quite long.
-    ///
-    /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#headers
-    pub headers: HashMap<String, String>,
-
-    /// The final part of the request is its body. Not all requests have one: requests fetching resources,
-    /// like GET, HEAD, DELETE, or OPTIONS, usually don't need one. Some requests send data to the server in
-    /// order to update it: as often the case with POST requests (containing HTML form data).
-    ///
-    /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#body
-    pub body: Vec<u8>,
-}
-
-impl Request {
-    pub fn parse(s: String) -> anyhow::Result<Self> {
-        let mut lines = s.split("\r\n");
-
-        // parse request line
-        let mut request_line = lines.next().unwrap().split(' ');
-        let method: Method = request_line.next().unwrap().try_into()?;
-
-        let mut request = Self {
-            method,
-            url: String::new(),
-            version: ProtocolVersion::HTTP11, // default protocol version.
-            headers: HashMap::new(),
-            body: Vec::new(),
-        };
-
-        if let Some(rest) = request_line.next() {
-            request.url = rest.trim().to_string();
-
-            if let Some(rest) = request_line.next() {
-                request.version = rest.trim().try_into()?;
-                debug!("version: {}", request.version);
-            }
-        }
-
-        // parse headers
-        for next in lines.by_ref() {
-            if next.is_empty() {
-                break;
-            }
-            match next.split_once(':') {
-                Some((key, value)) => {
-                    request
-                        .headers
-                        .insert(key.trim().to_string(), value.trim().to_string());
-                }
-                None => {
-                    break;
-                }
-            }
-        }
-
-        // parse body
-        let mut body = String::new();
-        for next in lines {
-            if next.is_empty() {
-                break;
-            }
-            body.push_str(next);
-        }
-        if !body.is_empty() {
-            request.body = body.into()
-        }
-
-        Ok(request)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-
-    use super::{Method, ProtocolVersion, Request};
-
-    #[test]
-    fn test_request_parse() {
-        let content = r#"POST /api/authors HTTP/1.1
-Host: myWebApi.com
-Content-Type: application/json
-Cache-Control: no-cache
-
-{
-     "Name": "Felipe Gavilán",
-     "Age": 999
-}"#;
-
-        let request = Request::parse(content.to_string()).expect("failed to parse request");
-        assert_eq!(
-            request,
-            Request {
-                method: Method::Post,
-                url: "/api/authors".into(),
-                version: ProtocolVersion::HTTP11,
-                headers: HashMap::from([
-                    ("Host".into(), "myWebApi.com".into()),
-                    ("Content-Type".into(), "application/json".into()),
-                    ("Cache-Control".into(), "no-cache".into()),
-                ]),
-                body: r#"{
-                    "Name": "Felipe Gavilán",
-                    "Age": 999
-               }"#
-                .into()
-            }
-        )
     }
 }

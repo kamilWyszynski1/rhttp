@@ -1,9 +1,10 @@
 use crate::{
-    http::{Method, Request},
+    http::Method,
     middleware::Middleware,
+    request::Request,
     response::{Responder, Response},
 };
-use anyhow::Context;
+use anyhow::{bail, Context};
 use log::error;
 use std::{
     collections::HashMap,
@@ -36,10 +37,108 @@ impl HandlerTrait for () {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+struct RouteMetadata {
+    /// Original, registered path.
+    origin: String,
+
+    /// Holds params' segments index counted as place after '/' character.
+    ///
+    /// `/test/<param1>/<param2>` - {"param1": 1, "param2": 2}.
+    param_segments: HashMap<String, u8>,
+}
+
+impl TryFrom<String> for RouteMetadata {
+    type Error = anyhow::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Ok(Self {
+            origin: value.clone(),
+            param_segments: parse_param_segments(value)?,
+        })
+    }
+}
+
+fn parse_param_segments(value: String) -> anyhow::Result<HashMap<String, u8>> {
+    let mut param_segments: HashMap<String, u8> = HashMap::new();
+    let mut segment = String::new();
+    let mut beginning_found = false;
+    let mut slash_counter = 0;
+
+    for c in value.chars() {
+        match c {
+            '/' => slash_counter += 1,
+            '<' => {
+                beginning_found = true;
+                continue;
+            }
+            '>' => {
+                beginning_found = false;
+                // slash_counter - 1 because we don't want to consider starting '/'
+                param_segments.insert(segment.clone(), slash_counter - 1);
+                segment.clear();
+                continue;
+            }
+            _ => {
+                if beginning_found {
+                    segment.push(c)
+                }
+            }
+        }
+    }
+
+    if beginning_found {
+        bail!("Invalid url - param segment not closed")
+    }
+
+    Ok(param_segments)
+}
+
 #[derive(Clone)]
 struct Route {
-    path: String,
     pub handler: Arc<Box<dyn HandlerTrait>>,
+
+    /// Contains metadata about registered route.
+    meta: RouteMetadata,
+}
+
+impl Route {
+    /// Creates new Route, tries to parse path into RouteMetadata.
+    fn new<S: Into<String>>(path: S, handler: Box<dyn HandlerTrait>) -> anyhow::Result<Self> {
+        let path: String = path.into();
+        Ok(Self {
+            handler: Arc::new(handler),
+            meta: RouteMetadata::try_from(path)?,
+        })
+    }
+
+    /// Indicates if request's path match with router's path.
+    ///
+    /// '/test/john/doe'  & '/test/<name>/<surn>' => true,
+    /// '/test/test/      & '/test/test'          => true,
+    /// '/test/test/test' & '/test/test'          => false,
+    pub fn should_fire_on_path(&self, path: &str) -> bool {
+        let mut split_path = path.split('/');
+        let mut split_route = self.meta.origin.split('/');
+
+        for p in split_path.by_ref() {
+            let r = match split_route.next() {
+                Some(value) => value,
+                None => {
+                    return false;
+                }
+            };
+            if p != r && !(r.starts_with('<') && r.ends_with('>')) {
+                return false;
+            }
+        }
+        // paths does not match if split_route still has some items.
+        if split_route.next().is_some() {
+            return false;
+        }
+
+        true
+    }
 }
 
 pub struct Server {
@@ -89,7 +188,7 @@ impl Server {
             .get(&request.method)
             .with_context(|| format!("not registered routes for {:?} method", request.method))?
             .iter()
-            .find(|route| route.path == request.url)
+            .find(|route| route.should_fire_on_path(&request.url))
             .context("no matching route")?
             .clone();
 
@@ -97,6 +196,7 @@ impl Server {
             m.on_request(&mut request)?;
         }
 
+        request.inject_params_seqments(route.meta.param_segments);
         let mut response = route.handler.handle(request);
 
         for m in &self.middlewares {
@@ -116,10 +216,9 @@ impl Server {
         R: Responder + 'static,
         H: Fn(Request) -> R + Send + Sync + 'static,
     {
-        self.routes.entry(Method::Get).or_default().push(Route {
-            path: path.into(),
-            handler: Arc::new(Box::new(handler)),
-        });
+        self.routes.entry(Method::Get).or_default().push(
+            Route::new(path, Box::new(handler)).expect("tried to register invalid GET route"),
+        );
         self
     }
 
@@ -130,10 +229,9 @@ impl Server {
         R: Responder + 'static,
         H: Fn(Request) -> R + Send + Sync + 'static,
     {
-        self.routes.entry(Method::Post).or_default().push(Route {
-            path: path.into(),
-            handler: Arc::new(Box::new(handler)),
-        });
+        self.routes.entry(Method::Post).or_default().push(
+            Route::new(path, Box::new(handler)).expect("tried to register invalid POST route"),
+        );
         self
     }
 
@@ -144,10 +242,9 @@ impl Server {
         R: Responder + 'static,
         H: Fn(Request) -> R + Send + Sync + 'static,
     {
-        self.routes.entry(Method::Put).or_default().push(Route {
-            path: path.into(),
-            handler: Arc::new(Box::new(handler)),
-        });
+        self.routes.entry(Method::Put).or_default().push(
+            Route::new(path, Box::new(handler)).expect("tried to register invalid PUT route"),
+        );
         self
     }
 
@@ -158,10 +255,9 @@ impl Server {
         R: Responder + 'static,
         H: Fn(Request) -> R + Send + Sync + 'static,
     {
-        self.routes.entry(Method::Delete).or_default().push(Route {
-            path: path.into(),
-            handler: Arc::new(Box::new(handler)),
-        });
+        self.routes.entry(Method::Delete).or_default().push(
+            Route::new(path, Box::new(handler)).expect("tried to register invalid DELETE route"),
+        );
         self
     }
 
@@ -203,9 +299,9 @@ fn parse_request_from_tcp(stream: &mut TcpStream) -> anyhow::Result<Request> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{http::Request, middleware::LogMiddleware, response::Response};
+    use crate::{middleware::LogMiddleware, request::Request, response::Response};
 
-    use super::Server;
+    use super::{Route, Server};
 
     #[test]
     fn test_handlers() -> anyhow::Result<()> {
@@ -229,5 +325,44 @@ mod tests {
         Server::new("127.0.0.1", 8080)
             .middleware(LogMiddleware {})
             .run()
+    }
+
+    #[test]
+    fn test_params() -> anyhow::Result<()> {
+        fn handler(_req: Request) -> &'static str {
+            "hello"
+        }
+
+        // /test/<param1>
+        fn handler2(req: Request) -> anyhow::Result<&'static str> {
+            let _param_value = req.query::<String>("param1")?;
+            Ok("hello")
+        }
+
+        Server::new("127.0.0.1", 8080)
+            .get("/", handler)
+            .get("/test/<param1>", handler2)
+            .run()
+    }
+
+    #[test]
+    fn test_should_fire_on_path() {
+        let r = Route::new("/test", Box::new(())).expect("valid route");
+
+        assert!(r.should_fire_on_path("/test"));
+        assert!(!r.should_fire_on_path("/test/test"));
+        assert!(!r.should_fire_on_path("/"));
+
+        let r = Route::new("/test/<param1>", Box::new(())).expect("valid route");
+
+        assert!(!r.should_fire_on_path("/test"));
+        assert!(r.should_fire_on_path("/test/test"));
+        assert!(!r.should_fire_on_path("/"));
+
+        let r = Route::new("/test/<param1>/<param2>", Box::new(())).expect("valid route");
+
+        assert!(r.should_fire_on_path("/test/1/2"));
+        assert!(!r.should_fire_on_path("/test/test"));
+        assert!(!r.should_fire_on_path("/"));
     }
 }

@@ -1,6 +1,6 @@
 use log::debug;
 
-use crate::{http::Request, response::Response};
+use crate::{request::Request, response::Response};
 
 pub trait Middleware: Send + Sync {
     /// Functionality that is being run on every request that goes into the server.
