@@ -11,7 +11,7 @@ use std::{
 use crate::{
     http::{Method, ProtocolVersion, Request, ResponseStatus},
     middleware::Middleware,
-    response::Response,
+    response::{Responder, Response, self},
 };
 
 type InnerHandler = Box<dyn Fn(Request) -> anyhow::Result<Response> + Send + Sync>;
@@ -23,12 +23,43 @@ struct Route {
     pub handler: Handler,
 }
 
+pub trait HandlerTrait: Send + Sync + 'static {
+    fn handle(&self, request: Request) -> Response;
+}
+
+impl<F, R> HandlerTrait for F
+where
+    R: Responder,
+    F: Fn(Request) -> Box<R> + Send + Sync + 'static,
+{
+    fn handle(&self, request: Request) -> Response {
+        let r = self(request.clone());
+        match r.respond_to(request) {
+            Ok(response) => response,
+            Err(e) => todo!(),
+        }
+    }
+}
+
+impl HandlerTrait for () {
+    fn handle(&self, request: Request) -> Response {
+        Response::default()
+    }
+}
+
+struct Route2 {
+    path: String,
+    pub handler: Box<dyn HandlerTrait>,
+}
+
 pub struct Server {
     host: String,
     port: u32,
 
     /// Registered routes.
     routes: HashMap<Method, Vec<Route>>,
+
+    routes2: HashMap<Method, Vec<Route2>>,
 
     /// Registered middlewares that will be run during request handling.
     middlewares: Vec<Box<dyn Middleware>>,
@@ -40,6 +71,7 @@ impl Server {
             host: host.into(),
             port,
             routes: HashMap::new(),
+            routes2: HashMap::new(),
             middlewares: vec![],
         }
     }
@@ -113,6 +145,19 @@ impl Server {
         });
         self
     }
+
+    // /// Registers GET route.
+    // pub fn get2<S, H, R>(mut self, path: S, handler: H) -> Self
+    // where
+    //     S: Into<String>,
+    //     H: Fn(Request) -> Box<dyn Responder> + Sync + Send + 'static,
+    // {
+    //     self.routes2.entry(Method::Get).or_default().push(Route2 {
+    //         path: path.into(),
+    //         handler: Box::new(handler),
+    //     });
+    //     self
+    // }
 
     /// Registers POST route.
     pub fn post<S, H>(mut self, path: S, handler: H) -> Self

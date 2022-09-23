@@ -13,6 +13,12 @@ pub enum ProtocolVersion {
     HTTP3,
 }
 
+impl Default for ProtocolVersion {
+    fn default() -> Self {
+        Self::HTTP11
+    }
+}
+
 impl TryFrom<&str> for ProtocolVersion {
     type Error = anyhow::Error;
 
@@ -128,6 +134,12 @@ pub enum Method {
     Delete,
 }
 
+impl Default for Method {
+    fn default() -> Self {
+        Self::Get
+    }
+}
+
 impl TryFrom<&str> for Method {
     type Error = anyhow::Error;
 
@@ -146,7 +158,7 @@ impl TryFrom<&str> for Method {
 /// Representation of HTTP Request.
 ///
 /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#body
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     /// An HTTP method, a verb (like GET, PUT or POST) or a noun (like HEAD or OPTIONS), that describes
     /// the action to be performed. For example, GET indicates that a resource should be fetched or POST means

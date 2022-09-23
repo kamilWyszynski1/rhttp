@@ -6,6 +6,32 @@ pub trait Responder {
     fn respond_to(self, req: Request) -> anyhow::Result<Response>;
 }
 
+impl Responder for () {
+    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+        Ok(Response::default())
+    }
+}
+
+// impl Responder for &'static str {
+//     fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+//         let mut resp = Response::default();
+//         resp.with_body(self.to_string());
+//         Ok(resp)
+//     }
+// }
+
+impl<'a> Responder for &'a str {
+    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+        let mut resp = Response::default();
+        resp.with_body(self.to_string());
+        Ok(resp)
+    }
+}
+
+struct ResponseBuilder {
+    
+}
+
 /// Responses consist of the following elements:
 ///
 /// * The version of the HTTP protocol they follow.
@@ -19,6 +45,23 @@ pub struct Response {
     pub status: ResponseStatus,
     pub headers: HashMap<String, String>,
     pub body: Option<String>,
+}
+
+impl Response {
+    fn with_body<S: ToString>(&mut self, s: S) {
+        self.body = Some(s.to_string())
+    }
+}
+
+impl Default for Response {
+    fn default() -> Self {
+        Self {
+            protocol: ProtocolVersion::HTTP11,
+            status: ResponseStatus::Ok,
+            headers: HashMap::default(),
+            body: None,
+        }
+    }
 }
 
 #[allow(clippy::from_over_into)]
