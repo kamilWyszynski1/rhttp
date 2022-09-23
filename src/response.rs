@@ -12,13 +12,11 @@ impl Responder for () {
     }
 }
 
-// impl Responder for &'static str {
-//     fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
-//         let mut resp = Response::default();
-//         resp.with_body(self.to_string());
-//         Ok(resp)
-//     }
-// }
+impl Responder for Response {
+    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+        Ok(self)
+    }
+}
 
 impl<'a> Responder for &'a str {
     fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
@@ -28,9 +26,7 @@ impl<'a> Responder for &'a str {
     }
 }
 
-struct ResponseBuilder {
-    
-}
+struct ResponseBuilder {}
 
 /// Responses consist of the following elements:
 ///

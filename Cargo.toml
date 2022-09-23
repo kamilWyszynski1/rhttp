@@ -8,9 +8,9 @@ name = "rhttp"
 path = "src/lib.rs"
 
 
-[[bin]]
-name = "bin"
-path = "src/bin.rs"
+# [[bin]]
+# name = "rhttp"
+# path = "src/bin.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

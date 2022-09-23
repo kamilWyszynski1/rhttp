@@ -11,7 +11,7 @@ use std::{
 use crate::{
     http::{Method, ProtocolVersion, Request, ResponseStatus},
     middleware::Middleware,
-    response::{Responder, Response, self},
+    response::{self, Responder, Response},
 };
 
 type InnerHandler = Box<dyn Fn(Request) -> anyhow::Result<Response> + Send + Sync>;
@@ -23,20 +23,28 @@ struct Route {
     pub handler: Handler,
 }
 
+fn wrap<F, R>(f: F) -> Box<dyn HandlerTrait>
+where
+    R: Responder,
+    F: Fn(Request) -> R + Send + Sync,
+{
+    // Box::new(|req: Request| f(req.clone()).respond_to(req).expect("error in wrap"))
+    Box::new(|req| Response::default())
+}
+
 pub trait HandlerTrait: Send + Sync + 'static {
     fn handle(&self, request: Request) -> Response;
 }
 
 impl<F, R> HandlerTrait for F
 where
-    R: Responder,
-    F: Fn(Request) -> Box<R> + Send + Sync + 'static,
+    R: Responder + 'static,
+    F: Fn(Request) -> R + Send + Sync + 'static,
 {
     fn handle(&self, request: Request) -> Response {
-        let r = self(request.clone());
-        match r.respond_to(request) {
+        match self(request.clone()).respond_to(request) {
             Ok(response) => response,
-            Err(e) => todo!(),
+            Err(e) => Response::default(),
         }
     }
 }
@@ -146,18 +154,19 @@ impl Server {
         self
     }
 
-    // /// Registers GET route.
-    // pub fn get2<S, H, R>(mut self, path: S, handler: H) -> Self
-    // where
-    //     S: Into<String>,
-    //     H: Fn(Request) -> Box<dyn Responder> + Sync + Send + 'static,
-    // {
-    //     self.routes2.entry(Method::Get).or_default().push(Route2 {
-    //         path: path.into(),
-    //         handler: Box::new(handler),
-    //     });
-    //     self
-    // }
+    /// Registers GET route.
+    pub fn get2<S, R, H>(mut self, path: S, handler: H) -> Self
+    where
+        S: Into<String>,
+        R: Responder + 'static,
+        H: Fn(Request) -> R + Send + Sync + 'static,
+    {
+        self.routes2.entry(Method::Get).or_default().push(Route2 {
+            path: path.into(),
+            handler: Box::new(handler),
+        });
+        self
+    }
 
     /// Registers POST route.
     pub fn post<S, H>(mut self, path: S, handler: H) -> Self
@@ -229,4 +238,35 @@ fn parse_request_from_tcp(stream: &mut TcpStream) -> anyhow::Result<Request> {
     }
 
     Request::parse(String::from_utf8(received)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{http::Request, middleware::LogMiddleware, response::Response};
+
+    use super::Server;
+
+    #[test]
+    fn test_handlers() -> anyhow::Result<()> {
+        fn handler(_req: Request) {}
+        fn handler2(_req: Request) -> &'static str {
+            "hello"
+        }
+        fn handler3(_req: Request) -> Response {
+            Response::default()
+        }
+
+        Server::new("127.0.0.1", 8080)
+            .get2("/", handler)
+            .get2("/", handler2)
+            .get2("/", handler3)
+            .run()
+    }
+
+    #[test]
+    fn test_middlewares() -> anyhow::Result<()> {
+        Server::new("127.0.0.1", 8080)
+            .middleware(LogMiddleware {})
+            .run()
+    }
 }
