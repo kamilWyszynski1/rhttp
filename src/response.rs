@@ -6,27 +6,80 @@ pub trait Responder {
     fn respond_to(self, req: Request) -> anyhow::Result<Response>;
 }
 
+/// Responder implementation for '()', returns default Response (200, HTTP1.1).
+///
+/// ```rust
+/// fn handler(_req: Request) {}
+///
+/// Server::new().get("/", handler).run()?;
+///
+/// ```
 impl Responder for () {
     fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
         Ok(Response::default())
     }
 }
 
+/// Response by defualt should implement Responder.
 impl Responder for Response {
     fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
         Ok(self)
     }
 }
 
+/// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
+///
+/// ```rust
+/// fn handler(_req: Request) -> &'static str {
+///     "hello"
+/// }
+///
+/// Server::new().get("/", handler).run()?;
+///
+/// ```
 impl<'a> Responder for &'a str {
     fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
-        let mut resp = Response::default();
-        resp.with_body(self.to_string());
-        Ok(resp)
+        Ok(Response::build().body(self.to_string()).finalize())
     }
 }
 
-struct ResponseBuilder {}
+/// Builder for Response struct.
+#[derive(Default, Debug)]
+pub struct ResponseBuilder {
+    response: Response,
+}
+
+impl ResponseBuilder {
+    /// Sets protocol field.
+    pub fn protocol(&mut self, protocol: ProtocolVersion) -> &mut Self {
+        self.response.protocol = protocol;
+        self
+    }
+
+    /// Sets status field.
+    pub fn status(&mut self, status: ResponseStatus) -> &mut Self {
+        self.response.status = status;
+        self
+    }
+
+    /// Add single header to headers field.
+    /// Call multiple times for multiple headers.
+    pub fn header(&mut self, key: String, value: String) -> &mut Self {
+        self.response.headers.insert(key, value);
+        self
+    }
+
+    /// Sets body field.
+    pub fn body(&mut self, body: String) -> &mut Self {
+        self.response.body = Some(body);
+        self
+    }
+
+    /// Returns built Response leaving empty at that place.
+    pub fn finalize(&mut self) -> Response {
+        std::mem::take(&mut self.response)
+    }
+}
 
 /// Responses consist of the following elements:
 ///
@@ -37,15 +90,22 @@ struct ResponseBuilder {}
 /// * Optionally, a body containing the fetched resource.
 #[derive(Debug, Clone)]
 pub struct Response {
+    /// The HTTP protocol version used.
     pub protocol: ProtocolVersion,
+
+    /// HTTP status returned.
     pub status: ResponseStatus,
+
+    /// HTTP headers returned.
     pub headers: HashMap<String, String>,
+
+    /// HTTP body content returned.
     pub body: Option<String>,
 }
 
 impl Response {
-    fn with_body<S: ToString>(&mut self, s: S) {
-        self.body = Some(s.to_string())
+    fn build() -> ResponseBuilder {
+        ResponseBuilder::default()
     }
 }
 

@@ -1,3 +1,8 @@
+use crate::{
+    http::{Method, Request},
+    middleware::Middleware,
+    response::{Responder, Response},
+};
 use anyhow::Context;
 use log::error;
 use std::{
@@ -7,30 +12,6 @@ use std::{
     sync::Arc,
     thread,
 };
-
-use crate::{
-    http::{Method, ProtocolVersion, Request, ResponseStatus},
-    middleware::Middleware,
-    response::{self, Responder, Response},
-};
-
-type InnerHandler = Box<dyn Fn(Request) -> anyhow::Result<Response> + Send + Sync>;
-type Handler = Arc<InnerHandler>;
-
-#[derive(Clone)]
-struct Route {
-    path: String,
-    pub handler: Handler,
-}
-
-fn wrap<F, R>(f: F) -> Box<dyn HandlerTrait>
-where
-    R: Responder,
-    F: Fn(Request) -> R + Send + Sync,
-{
-    // Box::new(|req: Request| f(req.clone()).respond_to(req).expect("error in wrap"))
-    Box::new(|req| Response::default())
-}
 
 pub trait HandlerTrait: Send + Sync + 'static {
     fn handle(&self, request: Request) -> Response;
@@ -44,20 +25,21 @@ where
     fn handle(&self, request: Request) -> Response {
         match self(request.clone()).respond_to(request) {
             Ok(response) => response,
-            Err(e) => Response::default(),
+            Err(_e) => Response::default(),
         }
     }
 }
 
 impl HandlerTrait for () {
-    fn handle(&self, request: Request) -> Response {
+    fn handle(&self, _request: Request) -> Response {
         Response::default()
     }
 }
 
-struct Route2 {
+#[derive(Clone)]
+struct Route {
     path: String,
-    pub handler: Box<dyn HandlerTrait>,
+    pub handler: Arc<Box<dyn HandlerTrait>>,
 }
 
 pub struct Server {
@@ -66,8 +48,6 @@ pub struct Server {
 
     /// Registered routes.
     routes: HashMap<Method, Vec<Route>>,
-
-    routes2: HashMap<Method, Vec<Route2>>,
 
     /// Registered middlewares that will be run during request handling.
     middlewares: Vec<Box<dyn Middleware>>,
@@ -79,7 +59,6 @@ impl Server {
             host: host.into(),
             port,
             routes: HashMap::new(),
-            routes2: HashMap::new(),
             middlewares: vec![],
         }
     }
@@ -118,18 +97,7 @@ impl Server {
             m.on_request(&mut request)?;
         }
 
-        let mut response = match (route.handler)(request) {
-            Ok(r) => r,
-            Err(e) => {
-                error!("handle_connection_http - error: {}", e);
-                Response {
-                    protocol: ProtocolVersion::HTTP10,
-                    status: ResponseStatus::InternalServerError,
-                    headers: HashMap::new(),
-                    body: None,
-                }
-            }
-        };
+        let mut response = route.handler.handle(request);
 
         for m in &self.middlewares {
             m.on_response(&mut response)?;
@@ -142,10 +110,11 @@ impl Server {
     }
 
     /// Registers GET route.
-    pub fn get<S, H>(mut self, path: S, handler: H) -> Self
+    pub fn get<S, R, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
-        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+        R: Responder + 'static,
+        H: Fn(Request) -> R + Send + Sync + 'static,
     {
         self.routes.entry(Method::Get).or_default().push(Route {
             path: path.into(),
@@ -154,25 +123,12 @@ impl Server {
         self
     }
 
-    /// Registers GET route.
-    pub fn get2<S, R, H>(mut self, path: S, handler: H) -> Self
+    /// Registers POST route.
+    pub fn post<S, R, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
         R: Responder + 'static,
         H: Fn(Request) -> R + Send + Sync + 'static,
-    {
-        self.routes2.entry(Method::Get).or_default().push(Route2 {
-            path: path.into(),
-            handler: Box::new(handler),
-        });
-        self
-    }
-
-    /// Registers POST route.
-    pub fn post<S, H>(mut self, path: S, handler: H) -> Self
-    where
-        S: Into<String>,
-        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
     {
         self.routes.entry(Method::Post).or_default().push(Route {
             path: path.into(),
@@ -180,11 +136,13 @@ impl Server {
         });
         self
     }
+
     /// Registers PUT route.
-    pub fn put<S, H>(mut self, path: S, handler: H) -> Self
+    pub fn put<S, R, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
-        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+        R: Responder + 'static,
+        H: Fn(Request) -> R + Send + Sync + 'static,
     {
         self.routes.entry(Method::Put).or_default().push(Route {
             path: path.into(),
@@ -192,11 +150,13 @@ impl Server {
         });
         self
     }
+
     /// Registers DELETE route.
-    pub fn delete<S, H>(mut self, path: S, handler: H) -> Self
+    pub fn delete<S, R, H>(mut self, path: S, handler: H) -> Self
     where
         S: Into<String>,
-        H: Fn(Request) -> anyhow::Result<Response> + Send + Sync + 'static,
+        R: Responder + 'static,
+        H: Fn(Request) -> R + Send + Sync + 'static,
     {
         self.routes.entry(Method::Delete).or_default().push(Route {
             path: path.into(),
@@ -205,6 +165,7 @@ impl Server {
         self
     }
 
+    /// Registers new middleware.
     pub fn middleware<M>(mut self, m: M) -> Self
     where
         M: Middleware + 'static,
@@ -257,9 +218,9 @@ mod tests {
         }
 
         Server::new("127.0.0.1", 8080)
-            .get2("/", handler)
-            .get2("/", handler2)
-            .get2("/", handler3)
+            .get("/", handler)
+            .get("/", handler2)
+            .get("/", handler3)
             .run()
     }
 
