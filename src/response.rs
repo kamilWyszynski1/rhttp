@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::http::{ProtocolVersion, Request, ResponseStatus};
+use crate::{
+    http::{ProtocolVersion, Status},
+    request::Request,
+};
 
 pub trait Responder {
     fn respond_to(self, req: Request) -> anyhow::Result<Response>;
@@ -43,6 +46,37 @@ impl<'a> Responder for &'a str {
     }
 }
 
+/// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
+///
+/// ```rust
+/// fn handler(_req: Request) -> String {
+///     "hello".into()
+/// }
+///
+/// Server::new().get("/", handler).run()?;
+///
+/// ```
+impl Responder for String {
+    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+        Ok(Response::build().body(self).finalize())
+    }
+}
+
+impl<T> Responder for anyhow::Result<T>
+where
+    T: Responder,
+{
+    fn respond_to(self, req: Request) -> anyhow::Result<Response> {
+        match self {
+            Ok(r) => Ok(r.respond_to(req)?),
+            Err(e) => Ok(Response::build()
+                .status(Status::InternalServerError)
+                .body(e.to_string())
+                .finalize()),
+        }
+    }
+}
+
 /// Builder for Response struct.
 #[derive(Default, Debug)]
 pub struct ResponseBuilder {
@@ -57,7 +91,7 @@ impl ResponseBuilder {
     }
 
     /// Sets status field.
-    pub fn status(&mut self, status: ResponseStatus) -> &mut Self {
+    pub fn status(&mut self, status: Status) -> &mut Self {
         self.response.status = status;
         self
     }
@@ -94,7 +128,7 @@ pub struct Response {
     pub protocol: ProtocolVersion,
 
     /// HTTP status returned.
-    pub status: ResponseStatus,
+    pub status: Status,
 
     /// HTTP headers returned.
     pub headers: HashMap<String, String>,
@@ -113,7 +147,7 @@ impl Default for Response {
     fn default() -> Self {
         Self {
             protocol: ProtocolVersion::HTTP11,
-            status: ResponseStatus::Ok,
+            status: Status::Ok,
             headers: HashMap::default(),
             body: None,
         }
