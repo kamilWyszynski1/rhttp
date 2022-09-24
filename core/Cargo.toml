@@ -1,0 +1,11 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.65"
+env_logger = "0.9.1"
+log = "0.4.17"
+rustls = "0.20.6"
+macros = { path= "../macros" }

@@ -304,7 +304,7 @@ mod tests {
     use super::{Route, Server};
 
     #[test]
-    fn test_handlers() -> anyhow::Result<()> {
+    fn test_handlers() {
         fn handler(_req: Request) {}
         fn handler2(_req: Request) -> &'static str {
             "hello"
@@ -316,15 +316,12 @@ mod tests {
         Server::new("127.0.0.1", 8080)
             .get("/", handler)
             .get("/", handler2)
-            .get("/", handler3)
-            .run()
+            .get("/", handler3);
     }
 
     #[test]
-    fn test_middlewares() -> anyhow::Result<()> {
-        Server::new("127.0.0.1", 8080)
-            .middleware(LogMiddleware {})
-            .run()
+    fn test_middlewares() {
+        Server::new("127.0.0.1", 8080).middleware(LogMiddleware {});
     }
 
     #[test]
@@ -341,8 +338,8 @@ mod tests {
 
         Server::new("127.0.0.1", 8080)
             .get("/", handler)
-            .get("/test/<param1>", handler2)
-            .run()
+            .get("/test/<param1>", handler2);
+        Ok(())
     }
 
     #[test]
