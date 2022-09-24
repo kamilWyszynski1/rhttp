@@ -1,6 +1,10 @@
-use rhttp::request::Request;
-use rhttp::server::Server;
-use std::fmt::Write as _; // import without risk of name clashing
+use core::request::Request;
+use core::server::Server;
+use log::info;
+use std::fmt::Write as _;
+
+#[derive(macros::FromStored)]
+struct OwnParam(String);
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -18,8 +22,19 @@ fn main() -> anyhow::Result<()> {
         Ok(param_value)
     }
 
+    fn handler3(req: Request) -> anyhow::Result<String> {
+        let own_param = req.query::<OwnParam>("param")?;
+        Ok(own_param.0)
+    }
+
+    fn headers_handler(req: Request) {
+        info!("{:?}", req.headers())
+    }
+
     Server::new("127.0.0.1", 8080)
         .get("/test/<param1>", handler)
         .get("/test/<param2>/<param3>", handler2)
+        .get("/dupa/<param>", handler3)
+        .get("/", headers_handler)
         .run()
 }

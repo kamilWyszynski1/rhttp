@@ -1,3 +1,3 @@
 # rhttp
 
-Own, naive implementation of a http protocol.
+Own, naive implementation of a http framework.

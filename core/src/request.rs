@@ -1,44 +1,44 @@
-use std::{collections::HashMap, fmt::Debug, str::FromStr};
-
 use crate::http::{Method, ProtocolVersion};
 use anyhow::{bail, Context};
 use log::debug;
+use std::{collections::HashMap, fmt::Debug, str::FromStr};
 
-pub trait FromParam: Sized {
+/// Allows various types to be used as a query parameters or headers.
+/// One can use own type and implement this trait to use custom query parameters.
+///
+/// ```rust
+/// struct OwnParam(String);
+///
+/// impl FromStored for OwnParam {
+///     type Inner = Self;
+///
+///     fn from_stored(param: String) -> anyhow::Result<Self::Inner> {
+///         Ok(OwnParam(String::from_param(param)?))
+///     }
+/// }
+/// ```
+/// or use derive macro to do so. For now it's limited to
+/// unnamed tuple structs with only 1 parameter.
+/// ```rust
+/// #[derive(macros::FromParam)]
+/// struct OwnParam(String);
+///
+/// ```
+pub trait FromStored: Sized {
     type Inner;
 
-    fn from_param(param: String) -> anyhow::Result<Self::Inner>;
+    /// Converts stored String value into Self.
+    fn from_stored(stored: String) -> anyhow::Result<Self::Inner>;
 }
 
-// impl FromParam for String {
-//     type Inner = Self;
-
-//     fn from_param(param: String) -> anyhow::Result<Self::Inner> {
-//         Ok(param)
-//     }
-// }
-
-// impl<S> FromParam for S
-// where
-//     S: TryFrom<String>,
-//     <S as TryFrom<String>>::Error: Debug,
-// {
-//     type Inner = S;
-
-//     fn from_param(param: String) -> anyhow::Result<Self::Inner> {
-//         let a = S::try_from(param).unwrap();
-//         Ok(a)
-//     }
-// }
-
-impl<S> FromParam for S
+impl<S> FromStored for S
 where
     S: FromStr,
     <S as FromStr>::Err: Debug,
 {
     type Inner = S;
 
-    fn from_param(param: String) -> anyhow::Result<Self::Inner> {
+    fn from_stored(param: String) -> anyhow::Result<Self::Inner> {
         match S::from_str(&param) {
             Ok(value) => Ok(value),
             Err(e) => bail!("could not convert types: {:?}", e),
@@ -85,6 +85,7 @@ pub struct Request {
 impl Request {
     pub fn parse(s: String) -> anyhow::Result<Self> {
         let mut lines = s.split("\r\n");
+        println!("{:?}", s.lines());
 
         // parse request line
         let mut request_line = lines.next().unwrap().split(' ');
@@ -123,6 +124,7 @@ impl Request {
                 }
             }
         }
+        lines.next();
 
         // parse body
         let mut body = String::new();
@@ -160,7 +162,7 @@ impl Request {
     ///     .run()
     ///
     /// ```
-    pub fn query<F: FromParam>(&self, query_param: &str) -> anyhow::Result<F::Inner> {
+    pub fn query<F: FromStored>(&self, query_param: &str) -> anyhow::Result<F::Inner> {
         debug!(
             "query - starting with {:?} segments",
             self.metadata.segments
@@ -176,7 +178,15 @@ impl Request {
             )
             .context("there's no wanted param")?;
 
-        F::from_param(param.clone())
+        F::from_stored(param.clone())
+    }
+
+    pub fn header<F: FromStored>(&self, s: &str) -> anyhow::Result<F::Inner> {
+        F::from_stored(self.headers.get(s).context("header not found")?.to_string())
+    }
+
+    pub fn headers(&self) -> &HashMap<String, String> {
+        &self.headers
     }
 }
 
@@ -223,21 +233,14 @@ pub fn parse_segments(path: String) -> anyhow::Result<HashMap<String, u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::Request;
+    use super::RequestMetadata;
     use crate::http::{Method, ProtocolVersion};
+    use crate::request::Request;
     use std::collections::HashMap;
 
     #[test]
     fn test_request_parse() {
-        let content = r#"POST /api/authors HTTP/1.1
-Host: myWebApi.com
-Content-Type: application/json
-Cache-Control: no-cache
-
-{
-     "Name": "Felipe Gavilán",
-     "Age": 999
-}"#;
+        let content = "POST /api/authors HTTP/1.1\r\nHost: myWebApi.com\r\nContent-Type: application/json\r\nCache-Control: no-cache\r\n\r\n{\"Name\": \"Felipe Gavilán\",\"Age\": 999}";
 
         let request = Request::parse(content.to_string()).expect("failed to parse request");
         assert_eq!(
@@ -256,7 +259,10 @@ Cache-Control: no-cache
                     "Age": 999
                }"#
                 .into(),
-                ..Default::default()
+                metadata: RequestMetadata {
+                    segments: HashMap::from([(0, "api".into()), (1, "authors".into())]),
+                    ..Default::default()
+                }
             }
         )
     }
