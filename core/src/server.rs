@@ -3,8 +3,9 @@ use crate::{
     response::{Responder, Response},
 };
 use anyhow::{bail, Context};
-use hyper::{Body, Method, Request};
+use hyper::{body::Bytes, Body, Method, Request};
 use log::error;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::{Read, Write},
@@ -21,6 +22,30 @@ pub trait FromRequest<B>: Sized {
 impl<B> FromRequest<B> for Request<B> {
     fn from_request(req: Request<B>) -> anyhow::Result<Self> {
         Ok(req)
+    }
+}
+
+impl FromRequest<Body> for String {
+    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
+        let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
+        let string = std::str::from_utf8(&bytes)?.to_owned();
+
+        Ok(string)
+    }
+}
+
+pub struct Json<T>(pub T);
+
+impl<T> FromRequest<Body> for Json<T>
+where
+    T: DeserializeOwned,
+{
+    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
+        let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
+        let deserializer = &mut serde_json::Deserializer::from_slice(&bytes);
+
+        let value = T::deserialize(deserializer)?;
+        Ok(Json(value))
     }
 }
 

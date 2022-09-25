@@ -1,4 +1,5 @@
 use core::server::FromRequest;
+use core::server::Json;
 use core::server::Server;
 use hyper::body::Bytes;
 use hyper::Body;
@@ -8,17 +9,10 @@ use serde::{Deserialize, Serialize};
 #[derive(macros::FromStored)]
 struct OwnParam(String);
 
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct OwnBody {
     val: String,
 }
-
-// impl FromRequest<Body> for OwnBody {
-//     fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
-//         let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
-//         let decoded: OwnBody = bincode::deserialize(bytes.);
-//     }
-// }
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
@@ -41,7 +35,11 @@ fn main() -> anyhow::Result<()> {
 
     fn handler4(body: String) -> anyhow::Result<String> {
         dbg!("handler3");
-        Ok("own_param.0.".into())
+        Ok(body)
+    }
+
+    fn handler5(Json(own_body): Json<OwnBody>) {
+        dbg!(own_body);
     }
 
     // fn headers_handler(req: Request<()>) {
@@ -67,9 +65,9 @@ fn main() -> anyhow::Result<()> {
 
     Server::new("127.0.0.1", 8080)
         .get("/test/<param1>", handler)
-        .get("/", handler2)
+        // .get("/", handler2)
         .get("/dupa/<param>", handler3)
-        // .get("/", handler4)
-        // .post("/body", body_handler)
+        .get("/", handler4)
+        .get("/json", handler5)
         .run()
 }
