@@ -1,10 +1,13 @@
+use std::fmt::Debug;
+
+use hyper::{Body, Request};
 use log::debug;
 
-use crate::{request::Request, response::Response};
+use crate::response::Response;
 
-pub trait Middleware: Send + Sync {
+pub trait Middleware<B = Body>: Send + Sync {
     /// Functionality that is being run on every request that goes into the server.
-    fn on_request(&self, _req: &mut Request) -> anyhow::Result<()> {
+    fn on_request(&self, _req: &mut Request<B>) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -16,8 +19,11 @@ pub trait Middleware: Send + Sync {
 
 pub struct LogMiddleware {}
 
-impl Middleware for LogMiddleware {
-    fn on_request(&self, req: &mut Request) -> anyhow::Result<()> {
+impl<B> Middleware<B> for LogMiddleware
+where
+    B: Debug,
+{
+    fn on_request(&self, req: &mut Request<B>) -> anyhow::Result<()> {
         debug!("LogMiddleware::on_request - request: {:?}", req);
         Ok(())
     }

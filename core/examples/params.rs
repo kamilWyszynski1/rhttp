@@ -1,62 +1,75 @@
-use core::request::{FromStored, Request};
+use core::server::FromRequest;
 use core::server::Server;
+use hyper::body::Bytes;
 use hyper::Body;
-use log::info;
+use hyper::Request;
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
 
 #[derive(macros::FromStored)]
 struct OwnParam(String);
 
-fn hyper(req: hyper::Request<Body>) {}
+#[derive(Deserialize, Serialize)]
+struct OwnBody {
+    val: String,
+}
+
+// impl FromRequest<Body> for OwnBody {
+//     fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
+//         let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
+//         let decoded: OwnBody = bincode::deserialize(bytes.);
+//     }
+// }
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    fn handler(req: Request) -> anyhow::Result<String> {
-        let param_value = req.query::<String>("param1")?;
-        Ok(param_value)
+    fn handler() {
+        dbg!("handler");
+        // let param_value = req.query::<String>("param1")?;
+        // Ok(param_value)
     }
 
-    fn handler2(req: Request) -> anyhow::Result<String> {
-        let mut param_value = req.query::<String>("param2")?;
-        let param_value_i32: i32 = req.query::<i32>("param3")?;
-
-        let _ = write!(param_value, "{}", param_value_i32);
-        Ok(param_value)
+    fn handler2() -> &'static str {
+        dbg!("handler2");
+        "ok"
     }
 
-    fn handler3(req: Request) -> anyhow::Result<String> {
-        let own_param = req.query::<OwnParam>("param")?;
-        Ok(own_param.0)
+    fn handler3(req: Request<Body>) -> anyhow::Result<String> {
+        dbg!("handler3");
+        Ok("own_param.0.".into())
     }
 
-    fn headers_handler(req: Request) {
-        info!("{:?}", req.headers())
+    fn handler4(body: String) -> anyhow::Result<String> {
+        dbg!("handler3");
+        Ok("own_param.0.".into())
     }
 
-    #[derive(Deserialize, Serialize)]
-    struct Body {
-        val: String,
-        val_int: i32,
-    }
+    // fn headers_handler(req: Request<()>) {
+    //     info!("{:?}", req.headers())
+    // }
 
-    impl FromStored for Body {
-        fn from_stored(stored: String) -> anyhow::Result<Self> {
-            Ok(serde_json::from_str(&stored)?)
-        }
-    }
+    // #[derive(Deserialize, Serialize)]
+    // struct Body {
+    //     val: String,
+    //     val_int: i32,
+    // }
 
-    fn body_handler(req: Request) -> anyhow::Result<String> {
-        let body = req.body::<Body>()?;
-        Ok(serde_json::to_string(&body)?)
-    }
+    // impl FromStored for Body {
+    //     fn from_stored(stored: String) -> anyhow::Result<Self> {
+    //         Ok(serde_json::from_str(&stored)?)
+    //     }
+    // }
+
+    // fn body_handler(req: Request<()>) -> anyhow::Result<String> {
+    //     let body = req.body::<Body>()?;
+    //     Ok(serde_json::to_string(&body)?)
+    // }
 
     Server::new("127.0.0.1", 8080)
         .get("/test/<param1>", handler)
-        .get("/test/<param2>/<param3>", handler2)
+        .get("/", handler2)
         .get("/dupa/<param>", handler3)
-        .get("/", headers_handler)
-        .post("/body", body_handler)
+        // .get("/", handler4)
+        // .post("/body", body_handler)
         .run()
 }

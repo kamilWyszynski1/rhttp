@@ -1,31 +1,28 @@
 use std::collections::HashMap;
 
-use crate::{
-    http::{ProtocolVersion, Status},
-    request::Request,
-};
+use hyper::{Body, Request, StatusCode, Version};
 
 pub trait Responder {
-    fn respond_to(self, req: Request) -> anyhow::Result<Response>;
+    fn into_response(self) -> anyhow::Result<Response>;
 }
 
 /// Responder implementation for '()', returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// fn handler(_req: Request) {}
+/// fn handler(_req: Request<B>) {}
 ///
 /// Server::new().get("/", handler).run()?;
 ///
 /// ```
 impl Responder for () {
-    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+    fn into_response(self) -> anyhow::Result<Response> {
         Ok(Response::default())
     }
 }
 
 /// Response by defualt should implement Responder.
 impl Responder for Response {
-    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+    fn into_response(self) -> anyhow::Result<Response> {
         Ok(self)
     }
 }
@@ -33,7 +30,7 @@ impl Responder for Response {
 /// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// fn handler(_req: Request) -> &'static str {
+/// fn handler(_req: Request<B>) -> &'static str {
 ///     "hello"
 /// }
 ///
@@ -41,7 +38,7 @@ impl Responder for Response {
 ///
 /// ```
 impl<'a> Responder for &'a str {
-    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+    fn into_response(self) -> anyhow::Result<Response> {
         Ok(Response::build().body(self.to_string()).finalize())
     }
 }
@@ -49,7 +46,7 @@ impl<'a> Responder for &'a str {
 /// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// fn handler(_req: Request) -> String {
+/// fn handler(_req: Request<B>) -> String {
 ///     "hello".into()
 /// }
 ///
@@ -57,7 +54,7 @@ impl<'a> Responder for &'a str {
 ///
 /// ```
 impl Responder for String {
-    fn respond_to(self, _req: Request) -> anyhow::Result<Response> {
+    fn into_response(self) -> anyhow::Result<Response> {
         Ok(Response::build().body(self).finalize())
     }
 }
@@ -66,11 +63,11 @@ impl<T> Responder for anyhow::Result<T>
 where
     T: Responder,
 {
-    fn respond_to(self, req: Request) -> anyhow::Result<Response> {
+    fn into_response(self) -> anyhow::Result<Response> {
         match self {
-            Ok(r) => Ok(r.respond_to(req)?),
+            Ok(r) => Ok(r.into_response()?),
             Err(e) => Ok(Response::build()
-                .status(Status::InternalServerError)
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(e.to_string())
                 .finalize()),
         }
@@ -85,13 +82,13 @@ pub struct ResponseBuilder {
 
 impl ResponseBuilder {
     /// Sets protocol field.
-    pub fn protocol(&mut self, protocol: ProtocolVersion) -> &mut Self {
+    pub fn protocol(&mut self, protocol: hyper::Version) -> &mut Self {
         self.response.protocol = protocol;
         self
     }
 
     /// Sets status field.
-    pub fn status(&mut self, status: Status) -> &mut Self {
+    pub fn status(&mut self, status: StatusCode) -> &mut Self {
         self.response.status = status;
         self
     }
@@ -125,10 +122,10 @@ impl ResponseBuilder {
 #[derive(Debug, Clone)]
 pub struct Response {
     /// The HTTP protocol version used.
-    pub protocol: ProtocolVersion,
+    pub protocol: Version,
 
     /// HTTP status returned.
-    pub status: Status,
+    pub status: StatusCode,
 
     /// HTTP headers returned.
     pub headers: HashMap<String, String>,
@@ -146,8 +143,8 @@ impl Response {
 impl Default for Response {
     fn default() -> Self {
         Self {
-            protocol: ProtocolVersion::HTTP11,
-            status: Status::Ok,
+            protocol: Version::HTTP_11,
+            status: StatusCode::OK,
             headers: HashMap::default(),
             body: None,
         }
@@ -161,11 +158,11 @@ impl Into<Vec<u8>> for Response {
 
         let mut buf = String::new();
 
-        let (status_code, status_message) = self.status.get_code_message();
+        let (status_code, status_message) = (self.status.as_u16(), self.status.as_str());
 
         let _ = write!(
             &mut buf,
-            "{} {} {}",
+            "{:?} {} {}",
             self.protocol, status_code, status_message
         );
 
