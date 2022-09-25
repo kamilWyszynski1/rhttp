@@ -306,10 +306,10 @@ fn httparse_req_to_hyper_request(
     Ok(builder.body(Body::from(body))?)
 }
 
-// #[cfg(test)]
+#[cfg(test)]
 mod tests {
     use crate::{
-        request::{ContentType, Host, Json, PathParam},
+        request::{ContentType, Host, Json, PathParam, TypedHeader},
         response::Responder,
         response::Response,
         server::{HandlerTrait, Route},
@@ -535,6 +535,46 @@ mod tests {
             client
                 .send(
                     Request::post("/body/username")
+                        .body(Body::from(body))
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body(changed_body)
+                .finalize()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_client_3_param_handlers() -> anyhow::Result<()> {
+        fn handler(
+            PathParam(user): PathParam<String>,
+            PathParam(id): PathParam<i32>,
+            Json(mut body): Json<OwnBody>,
+        ) -> OwnBody {
+            body.val = user;
+            body.val2 = id;
+            body
+        }
+
+        let client = Client::new(HashMap::from([(
+            Method::POST,
+            vec![Route::new(
+                "/body/<user>/<id>",
+                handler.into_service().into(),
+            )?],
+        )]));
+
+        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
+        let changed_body = r#"{"val":"username","val2":100,"val3":true}"#;
+        assert_eq!(
+            client
+                .send(
+                    Request::post("/body/username/100")
                         .body(Body::from(body))
                         .unwrap()
                 )

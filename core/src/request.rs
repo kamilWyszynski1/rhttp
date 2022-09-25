@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use anyhow::{Context, Ok};
 use hyper::{
@@ -121,6 +121,9 @@ derive_header!(ContentType(_), name: CONTENT_TYPE);
 pub struct Host(pub String);
 derive_header!(Host(_), name: HOST);
 
+/// Types that implements this trait can be created from request's parts.
+/// This trait shouldn't be used directly, rather than that use some of its
+/// implementations like TypedHeader or PathParam.
 pub trait FromRequestParts: Sized {
     fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self>;
 }
@@ -158,13 +161,25 @@ impl PathParamOrdering {
     }
 }
 
+/// Container for values that are retrieved from query params.
+/// If inner type implements FromStr trait this container can be used
+/// in handler to get direct access for query param value.
+///
+/// ```rust
+/// use core::request::PathParam;
+/// use core::server::Server;
+///
+/// fn handler(PathParam(name): PathParam<String>) {}
+///
+/// Server::new("127.0.0.1", 8080).get("/<name>", handler);
+/// ```
 pub struct PathParam<T>(pub T);
 
 impl<T> FromRequestParts for PathParam<T>
 where
     T: 'static,
-    T: TryFrom<String>,
-    <T as TryFrom<String>>::Error: std::error::Error + Sync + Send,
+    T: FromStr,
+    <T as FromStr>::Err: std::error::Error + Sync + Send,
 {
     fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
         let path = parts.uri.to_string();
@@ -190,7 +205,7 @@ where
             .nth(*order_in_path + 1) // +1 because we have to skip first '/' as path starts with that.
             .context("invalid value from a string")?;
 
-        let parsed = PathParam(T::try_from(value_to_parse.to_string())?);
+        let parsed = PathParam(T::from_str(value_to_parse)?);
 
         parts.extensions.insert(ordering.increment());
 
