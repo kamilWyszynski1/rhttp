@@ -1,11 +1,11 @@
 use crate::{
     middleware::Middleware,
+    request::FromRequest,
     response::{Responder, Response},
 };
 use anyhow::{bail, Context};
-use hyper::{body::Bytes, Body, Method, Request};
+use hyper::{Body, Method, Request};
 use log::error;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::{Read, Write},
@@ -15,45 +15,20 @@ use std::{
     thread,
 };
 
-pub trait FromRequest<B>: Sized {
-    fn from_request(req: Request<B>) -> anyhow::Result<Self>;
-}
-
-impl<B> FromRequest<B> for Request<B> {
-    fn from_request(req: Request<B>) -> anyhow::Result<Self> {
-        Ok(req)
-    }
-}
-
-impl FromRequest<Body> for String {
-    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
-        let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
-        let string = std::str::from_utf8(&bytes)?.to_owned();
-
-        Ok(string)
-    }
-}
-
-pub struct Json<T>(pub T);
-
-impl<T> FromRequest<Body> for Json<T>
-where
-    T: DeserializeOwned,
-{
-    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
-        let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
-        let deserializer = &mut serde_json::Deserializer::from_slice(&bytes);
-
-        let value = T::deserialize(deserializer)?;
-        Ok(Json(value))
-    }
-}
-
+/// Trait implemented by transition handler's state.
+/// Introduced to have handlers that are generic only over R type.
 pub trait Service<R> {
     type Response;
+
+    /// Calls service's logic.
     fn call(&self, req: R) -> Self::Response;
 }
 
+/// Transition state for handler, it helps 'hide' Q type that is specific
+/// for various types of functions(with different amount of parameters).
+///
+/// IntoService implements Service trait and this way it's responsible for
+/// calling handler effectively calling wanted handler's logic.
 pub struct IntoService<H, Q, B> {
     handler: H,
     _marker: PhantomData<fn() -> (Q, B)>,
@@ -70,19 +45,16 @@ where
     }
 }
 
-// impl<B, D> FromRequest<B> for Request<D>
-// where
-//     D: From<B>,
-// {
-//     fn from_request(req: Request<B>) -> anyhow::Result<Self> {
-//         let (parts, body) = req.into_parts();
-//         let d = D::from(body);
-//         Ok(req)
-//     }
-// }
-
+/// Main 'entrypoint' for crate handlers. Various types of functions
+/// can implement this trait to be passed to Server as handlers.
+/// This trait itself does not represent 'final' state of handler,
+/// `into_service` function has to be called to turn Self into
+/// `IntoService` which is responsible for calling handler's logic.
 pub trait HandlerTrait<Q, B = Body>: Sized + Send + Sync + 'static {
+    /// User defined logic.
     fn handle(&self, request: Request<B>) -> Response;
+    
+    /// Turns Self into `IntoService`.
     fn into_service(self) -> IntoService<Self, Q, B>;
 }
 

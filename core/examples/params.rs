@@ -1,13 +1,10 @@
-use core::server::FromRequest;
-use core::server::Json;
+use core::request::ContentType;
+use core::request::Json;
 use core::server::Server;
 use hyper::body::Bytes;
 use hyper::Body;
 use hyper::Request;
 use serde::{Deserialize, Serialize};
-
-#[derive(macros::FromStored)]
-struct OwnParam(String);
 
 #[derive(Debug, Deserialize, Serialize)]
 struct OwnBody {
@@ -42,26 +39,9 @@ fn main() -> anyhow::Result<()> {
         dbg!(own_body);
     }
 
-    // fn headers_handler(req: Request<()>) {
-    //     info!("{:?}", req.headers())
-    // }
-
-    // #[derive(Deserialize, Serialize)]
-    // struct Body {
-    //     val: String,
-    //     val_int: i32,
-    // }
-
-    // impl FromStored for Body {
-    //     fn from_stored(stored: String) -> anyhow::Result<Self> {
-    //         Ok(serde_json::from_str(&stored)?)
-    //     }
-    // }
-
-    // fn body_handler(req: Request<()>) -> anyhow::Result<String> {
-    //     let body = req.body::<Body>()?;
-    //     Ok(serde_json::to_string(&body)?)
-    // }
+    fn handler_header(ContentType(content_type): ContentType) -> anyhow::Result<String> {
+        Ok(content_type)
+    }
 
     Server::new("127.0.0.1", 8080)
         .get("/test/<param1>", handler)
@@ -69,5 +49,6 @@ fn main() -> anyhow::Result<()> {
         .get("/dupa/<param>", handler3)
         .get("/", handler4)
         .get("/json", handler5)
+        .get("/header", handler_header)
         .run()
 }

@@ -1,268 +1,137 @@
-use anyhow::{bail, Context};
-use log::debug;
-use std::{collections::HashMap, fmt::Debug, str::FromStr};
+use anyhow::{Context, Ok};
+use hyper::{
+    body::Bytes,
+    header::{HeaderName, CONTENT_TYPE, HOST},
+    http::{request::Parts, HeaderValue},
+    Body, HeaderMap, Request,
+};
+use serde::de::DeserializeOwned;
 
-/// Allows various types to be used as a query parameters or headers.
-/// One can use own type and implement this trait to use custom query parameters.
-///
-/// ```rust
-/// struct OwnParam(String);
-///
-/// impl FromStored for OwnParam {
-///     type Inner = Self;
-///
-///     fn from_stored(param: String) -> anyhow::Result<Self> {
-///         Ok(OwnParam(String::from_param(param)?))
-///     }
-/// }
-/// ```
-/// or use derive macro to do so. For now it's limited to
-/// unnamed tuple structs with only 1 parameter.
-/// ```rust
-/// #[derive(macros::FromParam)]
-/// struct OwnParam(String);
-///
-/// ```
-pub trait FromStored: Sized {
-    /// Converts stored String value into Self.
-    fn from_stored(stored: String) -> anyhow::Result<Self>;
+/// Allows various types to be created from Request.
+pub trait FromRequest<B>: Sized {
+    fn from_request(req: Request<B>) -> anyhow::Result<Self>;
 }
 
-impl<S> FromStored for S
-where
-    S: FromStr,
-    <S as FromStr>::Err: Debug,
-{
-    fn from_stored(param: String) -> anyhow::Result<Self> {
-        match S::from_str(&param) {
-            Ok(value) => Ok(value),
-            Err(e) => bail!("could not convert types: {:?}", e),
-        }
+/// Implement FromRequest for every variant of Request<B>.
+impl<B> FromRequest<B> for Request<B> {
+    fn from_request(req: Request<B>) -> anyhow::Result<Self> {
+        Ok(req)
     }
 }
 
-// /// Representation of HTTP Request.
-// ///
-// /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#body
-// #[derive(Default, Debug, Clone, PartialEq, Eq)]
-// pub struct Request {
-//     /// An HTTP method, a verb (like GET, PUT or POST) or a noun (like HEAD or OPTIONS), that describes
-//     /// the action to be performed. For example, GET indicates that a resource should be fetched or POST means
-//     /// that data is pushed to the server (creating or modifying a resource, or generating a temporary document to send back).
-//     pub method: Method,
+/// Implement FromRequest for String for B in Body variant.
+///
+/// This allows to create handler like that:
+///
+/// ```rust
+/// fn handler(s: String) {}
+/// ```
+impl FromRequest<Body> for String {
+    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
+        let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
+        let string = std::str::from_utf8(&bytes)?.to_owned();
 
-//     /// The request target, usually a URL, or the absolute path of the protocol, port,
-//     /// and domain are usually characterized by the request context. The format of this
-//     /// request target varies between different HTTP methods.
-//     pub url: String,
+        Ok(string)
+    }
+}
 
-//     /// The HTTP version, which defines the structure of the remaining message,
-//     /// acting as an indicator of the expected version to use for the response.
-//     pub version: ProtocolVersion,
+/// Placeholder for value that can be deserialized from JSON.
+/// It implements FromRequest<Body> in order to allow user quick and easy usage
+/// of deserializable structs as body types in their handlers.
+///
+/// ```rust
+/// #[derive(Deserialize)]
+/// struct OwnBody {
+///     val: String
+///     val2: i32
+/// }
+///
+/// fn handler(Json(body): Json<OwnBody>) {}
+/// ```
+pub struct Json<T>(pub T);
 
-//     /// HTTP headers from a request follow the same basic structure of an HTTP header:
-//     /// a case-insensitive string followed by a colon (':') and a value whose structure depends
-//     /// upon the header. The whole header, including the value, consist of one single line, which can be quite long.
-//     ///
-//     /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#headers
-//     pub headers: HashMap<String, String>,
+impl<T> FromRequest<Body> for Json<T>
+where
+    T: DeserializeOwned,
+{
+    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
+        let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
+        let deserializer = &mut serde_json::Deserializer::from_slice(&bytes);
 
-//     /// The final part of the request is its body. Not all requests have one: requests fetching resources,
-//     /// like GET, HEAD, DELETE, or OPTIONS, usually don't need one. Some requests send data to the server in
-//     /// order to update it: as often the case with POST requests (containing HTML form data).
-//     ///
-//     /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Messages#body
-//     pub body: Option<String>,
+        let value = T::deserialize(deserializer)?;
+        Ok(Json(value))
+    }
+}
 
-//     metadata: RequestMetadata,
-// }
+/// Trait is implemented for types that can be turned from HeaderMap by specific key.
+///
+/// Multiple, commonly used headers from hyper crate implements this trait.
+/// That allows to deserialize them straight into handler's param.
+///
+/// ```rust
+/// fn handler_header(ContentType(content_type): ContentType) -> anyhow::Result<String> {
+///     Ok(content_type)
+/// }
+/// ```
+pub trait TypedHeader: Sized {
+    /// Returns header's key.
+    fn key() -> HeaderName;
 
-// impl Request {
-//     pub fn parse(s: String) -> anyhow::Result<Self> {
-//         let mut lines = s.split("\r\n");
-//         println!("{:?}", s.lines());
+    /// Tries to create Self from HeaderValue.
+    fn try_from_header_value(header_value: &HeaderValue) -> anyhow::Result<Self>;
 
-//         // parse request line
-//         let mut request_line = lines.next().unwrap().split(' ');
-//         let method: Method = request_line.next().unwrap().try_into()?;
+    /// Default implementation that uses `key` and `try_from_header_value` functions
+    /// to turn `map: HeaderMap<HeaderValue>` into `anyhow::Result<Self>`.
+    fn try_from_header_map(map: HeaderMap<HeaderValue>) -> anyhow::Result<Self> {
+        Self::try_from_header_value(map.get(Self::key()).context("header not found")?)
+    }
+}
 
-//         let mut request = Self {
-//             method,
-//             url: String::new(),
-//             version: ProtocolVersion::HTTP11, // default protocol version.
-//             ..Default::default()
-//         };
+/// Macro for faster TypedHeaderTrait implementations.
+macro_rules! derive_header {
+    ($type:ident(_), name: $name:ident) => {
+        impl TypedHeader for $type {
+            fn key() -> HeaderName {
+                $name
+            }
 
-//         if let Some(rest) = request_line.next() {
-//             request.url = rest.trim().to_string();
-//             request.metadata = RequestMetadata::from_url(&request.url)?;
+            fn try_from_header_value(header_value: &HeaderValue) -> anyhow::Result<Self> {
+                Ok($type(header_value.to_str()?.to_string()))
+            }
+        }
+    };
+}
 
-//             if let Some(rest) = request_line.next() {
-//                 request.version = rest.trim().try_into()?;
-//                 debug!("version: {}", request.version);
-//             }
-//         }
+// TODO: implement more headers.
+pub struct ContentType(pub String);
+derive_header!(ContentType(_), name: CONTENT_TYPE);
 
-//         // parse headers
-//         for next in lines.by_ref() {
-//             if next.is_empty() {
-//                 break;
-//             }
-//             match next.split_once(':') {
-//                 Some((key, value)) => {
-//                     request
-//                         .headers
-//                         .insert(key.trim().to_string(), value.trim().to_string());
-//                 }
-//                 None => {
-//                     break;
-//                 }
-//             }
-//         }
-//         lines.next();
+pub struct Host(pub String);
+derive_header!(Host(_), name: HOST);
 
-//         // parse body
-//         let mut body = String::new();
-//         for next in lines {
-//             if next.is_empty() {
-//                 break;
-//             }
-//             body.push_str(next);
-//         }
-//         if !body.is_empty() {
-//             request.body = Some(body);
-//         }
+trait FromRequestParts: Sized {
+    fn from_request_parts(parts: Parts) -> anyhow::Result<Self>;
+}
 
-//         Ok(request)
-//     }
+/// Implement FromRequestParts for every type that implements TypedHeader trait.  
+impl<T> FromRequestParts for T
+where
+    T: TypedHeader,
+{
+    fn from_request_parts(parts: Parts) -> anyhow::Result<Self> {
+        T::try_from_header_map(parts.headers)
+    }
+}
 
-//     /// This function is called before handler execution.
-//     /// We need to somehow provide information about how registered path was structured
-//     /// so we can use this information during query params retrieval.
-//     pub fn inject_params_seqments(&mut self, params_segments: HashMap<String, u8>) {
-//         debug!("injecting: {:?}", params_segments);
-//         self.metadata.params_segments = params_segments;
-//     }
-
-//     /// Tries to return Inner type of FromParam type specific when calling query.
-//     /// Injected params segments indicates index of RequestMetadata's segment to get.
-//     ///
-//     /// ```rust
-//     /// fn handler(req: Request) {
-//     ///     let _: String = req.query::<String>("param1").unwrap();
-//     /// }
-//     ///
-//     /// Server::new("127.0.0.1", 8080)
-//     ///     .get("/test/<param1>", handler)
-//     ///     .run()
-//     ///
-//     /// ```
-//     pub fn query<F: FromStored>(&self, query_param: &str) -> anyhow::Result<F> {
-//         debug!(
-//             "query - starting with {:?} segments",
-//             self.metadata.segments
-//         );
-//         let param = self
-//             .metadata
-//             .segments
-//             .get(
-//                 self.metadata
-//                     .params_segments
-//                     .get(query_param)
-//                     .context("there's not wanted param's index")?,
-//             )
-//             .context("there's no wanted param")?;
-
-//         F::from_stored(param.clone())
-//     }
-
-//     pub fn header<F: FromStored>(&self, s: &str) -> anyhow::Result<F> {
-//         F::from_stored(self.headers.get(s).context("header not found")?.to_string())
-//     }
-
-//     pub fn headers(&self) -> &HashMap<String, String> {
-//         &self.headers
-//     }
-
-//     pub fn body<F: FromStored>(&self) -> anyhow::Result<F> {
-//         F::from_stored(self.body.clone().context("no body provided")?)
-//     }
-// }
-
-// #[derive(Debug, Default, Clone, PartialEq, Eq)]
-// struct RequestMetadata {
-//     /// Holds indexes of path's segments.
-//     ///
-//     /// `/test/hello/world` - > {0: "test": ,1: "hello", 2: "world"}
-//     segments: HashMap<u8, String>,
-
-//     /// Holds params' segments names. This map is created during handler registration.
-//     ///
-//     /// `/test/<param1>/<param2>` - ["param1", "param2"].
-//     params_segments: HashMap<String, u8>,
-// }
-
-// impl RequestMetadata {
-//     fn from_url(s: &str) -> anyhow::Result<Self> {
-//         Ok(Self {
-//             segments: parse_segments(s.to_string())?
-//                 .iter_mut()
-//                 .map(|(k, v)| (*v, k.clone()))
-//                 .collect(),
-//             ..Default::default()
-//         })
-//     }
-// }
-
-// pub fn parse_segments(path: String) -> anyhow::Result<HashMap<String, u8>> {
-//     let mut segments: HashMap<String, u8> = HashMap::new();
-
-//     let mut split = path.split('/');
-//     if split.next().is_none() {
-//         bail!("invalid path")
-//     }
-
-//     // call next() one time to skip first "" value.
-//     split.enumerate().for_each(|(inx, val)| {
-//         segments.insert(val.to_string(), inx as u8);
-//     });
-
-//     Ok(segments)
-// }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::RequestMetadata;
-//     use crate::http::{Method, ProtocolVersion};
-//     use crate::request::Request;
-//     use std::collections::HashMap;
-
-//     #[test]
-//     fn test_request_parse() {
-//         let content = "POST /api/authors HTTP/1.1\r\nHost: myWebApi.com\r\nContent-Type: application/json\r\nCache-Control: no-cache\r\n\r\n{\"Name\": \"Felipe Gavilán\",\"Age\": 999}";
-
-//         let request = Request::parse(content.to_string()).expect("failed to parse request");
-//         assert_eq!(
-//             request,
-//             Request {
-//                 method: Method::Post,
-//                 url: "/api/authors".into(),
-//                 version: ProtocolVersion::HTTP11,
-//                 headers: HashMap::from([
-//                     ("Host".into(), "myWebApi.com".into()),
-//                     ("Content-Type".into(), "application/json".into()),
-//                     ("Cache-Control".into(), "no-cache".into()),
-//                 ]),
-//                 body: r#"{
-//                     "Name": "Felipe Gavilán",
-//                     "Age": 999
-//                }"#
-//                 .into(),
-//                 metadata: RequestMetadata {
-//                     segments: HashMap::from([(0, "api".into()), (1, "authors".into())]),
-//                     ..Default::default()
-//                 }
-//             }
-//         )
-//     }
-// }
+/// Implements FromRequest for every type that implements FromRequestParts trait.
+/// This implementation allows to use ContentType, Host, etc. structs as parameters
+/// in server's handlers.
+impl<T, B> FromRequest<B> for T
+where
+    T: FromRequestParts,
+{
+    fn from_request(req: Request<B>) -> anyhow::Result<Self> {
+        let (b, _) = req.into_parts();
+        T::from_request_parts(b)
+    }
+}

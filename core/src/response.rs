@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use hyper::{Body, Request, StatusCode, Version};
+use hyper::{StatusCode, Version};
 
 pub trait Responder {
     fn into_response(self) -> anyhow::Result<Response>;
