@@ -9,10 +9,12 @@ pub trait Responder {
 /// Responder implementation for '()', returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// fn handler(_req: Request<B>) {}
+/// use core::server::Server;
+/// use hyper::Request;
 ///
-/// Server::new().get("/", handler).run()?;
+/// fn handler() {}
 ///
+/// Server::new("127.0.0.1", 8080).get("/", handler);
 /// ```
 impl Responder for () {
     fn into_response(self) -> anyhow::Result<Response> {
@@ -30,11 +32,14 @@ impl Responder for Response {
 /// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// fn handler(_req: Request<B>) -> &'static str {
+/// use core::server::Server;
+/// use hyper::Request;
+///
+/// fn handler() -> &'static str {
 ///     "hello"
 /// }
 ///
-/// Server::new().get("/", handler).run()?;
+/// Server::new("127.0.0.1", 8080).get("/", handler);
 ///
 /// ```
 impl<'a> Responder for &'a str {
@@ -46,12 +51,14 @@ impl<'a> Responder for &'a str {
 /// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// fn handler(_req: Request<B>) -> String {
+/// use core::server::Server;
+/// use hyper::Request;
+///
+/// fn handler() -> String {
 ///     "hello".into()
 /// }
 ///
-/// Server::new().get("/", handler).run()?;
-///
+/// Server::new("127.0.0.1", 8080).get("/", handler);
 /// ```
 impl Responder for String {
     fn into_response(self) -> anyhow::Result<Response> {
@@ -95,14 +102,16 @@ impl ResponseBuilder {
 
     /// Add single header to headers field.
     /// Call multiple times for multiple headers.
-    pub fn header(&mut self, key: String, value: String) -> &mut Self {
-        self.response.headers.insert(key, value);
+    pub fn header<S: ToString>(&mut self, key: S, value: S) -> &mut Self {
+        self.response
+            .headers
+            .insert(key.to_string(), value.to_string());
         self
     }
 
     /// Sets body field.
-    pub fn body(&mut self, body: String) -> &mut Self {
-        self.response.body = Some(body);
+    pub fn body<S: ToString>(&mut self, body: S) -> &mut Self {
+        self.response.body = Some(body.to_string());
         self
     }
 
@@ -119,7 +128,7 @@ impl ResponseBuilder {
 /// * A status message, a non-authoritative short description of the status code.
 /// * HTTP headers, like those for requests.
 /// * Optionally, a body containing the fetched resource.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     /// The HTTP protocol version used.
     pub protocol: Version,
@@ -135,7 +144,7 @@ pub struct Response {
 }
 
 impl Response {
-    fn build() -> ResponseBuilder {
+    pub fn build() -> ResponseBuilder {
         ResponseBuilder::default()
     }
 }

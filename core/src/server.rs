@@ -45,6 +45,12 @@ where
     }
 }
 
+impl<B> Service<Request<B>> for () {
+    type Response = ();
+
+    fn call(&self, _req: Request<B>) -> Self::Response {}
+}
+
 /// Main 'entrypoint' for crate handlers. Various types of functions
 /// can implement this trait to be passed to Server as handlers.
 /// This trait itself does not represent 'final' state of handler,
@@ -53,7 +59,7 @@ where
 pub trait HandlerTrait<Q, B = Body>: Sized + Send + Sync + 'static {
     /// User defined logic.
     fn handle(&self, request: Request<B>) -> Response;
-    
+
     /// Turns Self into `IntoService`.
     fn into_service(self) -> IntoService<Self, Q, B>;
 }
@@ -169,10 +175,10 @@ fn parse_param_segments(value: String) -> anyhow::Result<HashMap<String, u8>> {
     Ok(param_segments)
 }
 
-pub struct BoxCloneService<T, U>(Box<dyn Service<T, Response = U> + Send + Sync>);
+pub struct BoxCloneService<T, U>(pub Box<dyn Service<T, Response = U> + Send + Sync>);
 
 impl<T, U> BoxCloneService<T, U> {
-    fn new<S>(service: S) -> Self
+    pub fn new<S>(service: S) -> Self
     where
         S: Service<T, Response = U> + Send + Sync + 'static,
     {
@@ -180,8 +186,19 @@ impl<T, U> BoxCloneService<T, U> {
     }
 }
 
+impl<H, Q, B> From<IntoService<H, Q, B>> for BoxCloneService<Request<B>, Response>
+where
+    B: 'static,
+    Q: 'static,
+    H: HandlerTrait<Q, B>,
+{
+    fn from(val: IntoService<H, Q, B>) -> Self {
+        BoxCloneService::new(val)
+    }
+}
+
 #[derive(Clone)]
-struct Route {
+pub struct Route {
     pub service: Arc<BoxCloneService<Request<Body>, Response>>,
 
     /// Contains metadata about registered route.
@@ -190,7 +207,7 @@ struct Route {
 
 impl Route {
     /// Creates new Route, tries to parse path into RouteMetadata.
-    fn new<S: Into<String>>(
+    pub fn new<S: Into<String>>(
         path: S,
         handler: BoxCloneService<Request<Body>, Response>,
     ) -> anyhow::Result<Self> {
@@ -206,7 +223,8 @@ impl Route {
     /// '/test/john/doe'  & '/test/<name>/<surn>' => true,
     /// '/test/test/      & '/test/test'          => true,
     /// '/test/test/test' & '/test/test'          => false,
-    pub fn should_fire_on_path(&self, path: String) -> bool {
+    pub fn should_fire_on_path<S: ToString>(&self, path: S) -> bool {
+        let path = path.to_string();
         let mut split_path = path.split('/');
         let mut split_route = self.meta.origin.split('/');
 
@@ -311,41 +329,47 @@ impl Server {
         self
     }
 
-    // /// Registers POST route.
-    // pub fn post<S, H>(mut self, path: S, handler: H) -> Self
-    // where
-    //     S: Into<String>,
-    //     H: HandlerTrait<()> + Send + Sync + 'static,
-    // {
-    //     self.routes.entry(Method::POST).or_default().push(
-    //         Route::new(path, Box::new(handler)).expect("tried to register invalid POST route"),
-    //     );
-    //     self
-    // }
+    /// Registers POST route.
+    pub fn post<Q, S, H>(mut self, path: S, handler: H) -> Self
+    where
+        Q: 'static,
+        S: Into<String>,
+        H: HandlerTrait<Q>,
+    {
+        self.routes.entry(Method::POST).or_default().push(
+            Route::new(path, BoxCloneService::new(handler.into_service()))
+                .expect("tried to register invalid POST route"),
+        );
+        self
+    }
 
-    // /// Registers PUT route.
-    // pub fn put<S, H>(mut self, path: S, handler: H) -> Self
-    // where
-    //     S: Into<String>,
-    //     H: HandlerTrait<()> + Send + Sync + 'static,
-    // {
-    //     self.routes.entry(Method::PUT).or_default().push(
-    //         Route::new(path, Box::new(handler)).expect("tried to register invalid PUT route"),
-    //     );
-    //     self
-    // }
+    /// Registers PUT route.
+    pub fn put<Q, S, H>(mut self, path: S, handler: H) -> Self
+    where
+        Q: 'static,
+        S: Into<String>,
+        H: HandlerTrait<Q>,
+    {
+        self.routes.entry(Method::PUT).or_default().push(
+            Route::new(path, BoxCloneService::new(handler.into_service()))
+                .expect("tried to register invalid PUT route"),
+        );
+        self
+    }
 
-    // /// Registers DELETE route.
-    // pub fn delete<S, H>(mut self, path: S, handler: H) -> Self
-    // where
-    //     S: Into<String>,
-    //     H: HandlerTrait<()> + Send + Sync + 'static,
-    // {
-    //     self.routes.entry(Method::DELETE).or_default().push(
-    //         Route::new(path, Box::new(handler)).expect("tried to register invalid DELETE route"),
-    //     );
-    //     self
-    // }
+    /// Registers DELETE route.
+    pub fn delete<Q, S, H>(mut self, path: S, handler: H) -> Self
+    where
+        Q: 'static,
+        S: Into<String>,
+        H: HandlerTrait<Q>,
+    {
+        self.routes.entry(Method::DELETE).or_default().push(
+            Route::new(path, BoxCloneService::new(handler.into_service()))
+                .expect("tried to register invalid DELETE route"),
+        );
+        self
+    }
 
     /// Registers new middleware.
     pub fn middleware<M>(mut self, m: M) -> Self
@@ -401,69 +425,196 @@ fn httparse_req_to_hyper_request(
 
     Ok(builder.body(Body::from(body))?)
 }
-// #[cfg(test)]
-// mod tests {
-//     use crate::{middleware::LogMiddleware, request::Request, response::Response};
 
-//     use super::{Route, Server};
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
 
-//     #[test]
-//     fn test_handlers() {
-//         fn handler(_req: Request) {}
-//         fn handler2(_req: Request) -> &'static str {
-//             "hello"
-//         }
-//         fn handler3(_req: Request) -> Response {
-//             Response::default()
-//         }
+    use crate::{
+        request::{ContentType, Host, Json},
+        response::Responder,
+        response::Response,
+        server::{HandlerTrait, Route},
+        testing::Client,
+    };
+    use hyper::{Body, Request};
+    use hyper::{Method, StatusCode};
+    use serde::{Deserialize, Serialize};
 
-//         Server::new("127.0.0.1", 8080)
-//             .get("/", handler)
-//             .get("/", handler2)
-//             .get("/", handler3);
-//     }
+    #[test]
+    fn test_should_fire_on_path() {
+        fn handler() {}
 
-//     #[test]
-//     fn test_middlewares() {
-//         Server::new("127.0.0.1", 8080).middleware(LogMiddleware {});
-//     }
+        let r = Route::new("/test", handler.into_service().into()).expect("valid route");
 
-//     #[test]
-//     fn test_params() -> anyhow::Result<()> {
-//         fn handler(_req: Request) -> &'static str {
-//             "hello"
-//         }
+        assert!(r.should_fire_on_path("/test"));
+        assert!(!r.should_fire_on_path("/test/test"));
+        assert!(!r.should_fire_on_path("/"));
 
-//         // /test/<param1>
-//         fn handler2(req: Request) -> anyhow::Result<&'static str> {
-//             let _param_value = req.query::<String>("param1")?;
-//             Ok("hello")
-//         }
+        let r = Route::new("/test/<param1>", handler.into_service().into()).expect("valid route");
 
-//         Server::new("127.0.0.1", 8080)
-//             .get("/", handler)
-//             .get("/test/<param1>", handler2);
-//         Ok(())
-//     }
+        assert!(!r.should_fire_on_path("/test"));
+        assert!(r.should_fire_on_path("/test/test"));
+        assert!(!r.should_fire_on_path("/"));
 
-//     #[test]
-//     fn test_should_fire_on_path() {
-//         let r = Route::new("/test", Box::new(())).expect("valid route");
+        let r = Route::new("/test/<param1>/<param2>", handler.into_service().into())
+            .expect("valid route");
 
-//         assert!(r.should_fire_on_path("/test"));
-//         assert!(!r.should_fire_on_path("/test/test"));
-//         assert!(!r.should_fire_on_path("/"));
+        assert!(r.should_fire_on_path("/test/1/2"));
+        assert!(!r.should_fire_on_path("/test/test"));
+        assert!(!r.should_fire_on_path("/"));
+    }
 
-//         let r = Route::new("/test/<param1>", Box::new(())).expect("valid route");
+    #[test]
+    fn test_with_client() -> anyhow::Result<()> {
+        fn empty() {}
 
-//         assert!(!r.should_fire_on_path("/test"));
-//         assert!(r.should_fire_on_path("/test/test"));
-//         assert!(!r.should_fire_on_path("/"));
+        fn str() -> &'static str {
+            "hello"
+        }
 
-//         let r = Route::new("/test/<param1>/<param2>", Box::new(())).expect("valid route");
+        fn string() -> String {
+            String::from("hello")
+        }
 
-//         assert!(r.should_fire_on_path("/test/1/2"));
-//         assert!(!r.should_fire_on_path("/test/test"));
-//         assert!(!r.should_fire_on_path("/"));
-//     }
-// }
+        fn result() -> anyhow::Result<&'static str> {
+            Ok("ok")
+        }
+
+        #[derive(Serialize, Deserialize)]
+        struct OwnBody {
+            val: String,
+            val2: i32,
+            val3: bool,
+        }
+
+        impl Responder for OwnBody {
+            fn into_response(self) -> anyhow::Result<Response> {
+                Ok(Response::build()
+                    .status(StatusCode::OK)
+                    .body(serde_json::to_string(&self)?)
+                    .finalize())
+            }
+        }
+
+        fn body_handler_json(Json(body): Json<OwnBody>) -> anyhow::Result<OwnBody> {
+            Ok(body)
+        }
+
+        fn content_type_handler(ContentType(content_type): ContentType) -> String {
+            content_type
+        }
+
+        fn host_handler(Host(host): Host) -> String {
+            host
+        }
+
+        let client = Client::new(HashMap::from([
+            (
+                Method::GET,
+                vec![
+                    Route::new("/", empty.into_service().into())?,
+                    Route::new("/str", str.into_service().into())?,
+                    Route::new("/string", string.into_service().into())?,
+                    Route::new("/result", result.into_service().into())?,
+                    Route::new("/content-type", content_type_handler.into_service().into())?,
+                    Route::new("/host", host_handler.into_service().into())?,
+                ],
+            ),
+            (
+                Method::POST,
+                vec![Route::new(
+                    "/body",
+                    body_handler_json.into_service().into(),
+                )?],
+            ),
+        ]));
+
+        assert_eq!(
+            client
+                .send(Request::get("/").body(Body::default()).unwrap())
+                .unwrap()
+                .into_response()?,
+            Response::build().status(StatusCode::OK).finalize()
+        );
+
+        assert_eq!(
+            client
+                .send(Request::get("/str").body(Body::default()).unwrap())
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body("hello")
+                .finalize()
+        );
+
+        assert_eq!(
+            client
+                .send(Request::get("/string").body(Body::default()).unwrap())
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body("hello")
+                .finalize()
+        );
+
+        assert_eq!(
+            client
+                .send(Request::get("/result").body(Body::default()).unwrap())
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body("ok")
+                .finalize()
+        );
+
+        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
+        assert_eq!(
+            client
+                .send(Request::post("/body").body(Body::from(body)).unwrap())
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body(body)
+                .finalize()
+        );
+
+        assert_eq!(
+            client
+                .send(
+                    Request::get("/content-type")
+                        .header(hyper::header::CONTENT_TYPE, "application/json")
+                        .body(Body::default())
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body("application/json")
+                .finalize()
+        );
+
+        assert_eq!(
+            client
+                .send(
+                    Request::get("/host")
+                        .header(hyper::header::HOST, "testing-space")
+                        .body(Body::default())
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body("testing-space")
+                .finalize()
+        );
+
+        Ok(())
+    }
+}

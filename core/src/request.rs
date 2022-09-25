@@ -40,9 +40,12 @@ impl FromRequest<Body> for String {
 /// of deserializable structs as body types in their handlers.
 ///
 /// ```rust
+/// use serde::Deserialize;
+/// use core::request::Json;
+///
 /// #[derive(Deserialize)]
 /// struct OwnBody {
-///     val: String
+///     val: String,
 ///     val2: i32
 /// }
 ///
@@ -69,6 +72,8 @@ where
 /// That allows to deserialize them straight into handler's param.
 ///
 /// ```rust
+/// use core::request::ContentType;
+///
 /// fn handler_header(ContentType(content_type): ContentType) -> anyhow::Result<String> {
 ///     Ok(content_type)
 /// }

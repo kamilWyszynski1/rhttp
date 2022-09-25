@@ -20,12 +20,7 @@ fn main() -> anyhow::Result<()> {
         // Ok(param_value)
     }
 
-    fn handler2() -> &'static str {
-        dbg!("handler2");
-        "ok"
-    }
-
-    fn handler3(req: Request<Body>) -> anyhow::Result<String> {
+    fn handler3(_req: Request<Body>) -> anyhow::Result<String> {
         dbg!("handler3");
         Ok("own_param.0.".into())
     }
