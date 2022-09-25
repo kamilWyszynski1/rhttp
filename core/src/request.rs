@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Ok};
 use hyper::{
     body::Bytes,
@@ -138,5 +140,54 @@ where
     fn from_request(req: Request<B>) -> anyhow::Result<Self> {
         let (b, _) = req.into_parts();
         T::from_request_parts(b)
+    }
+}
+
+/// PathParamOrdering wrapper type for storing state of what params were already read.
+#[derive(Default, Clone, Copy)]
+struct PathParamOrdering(usize);
+
+impl PathParamOrdering {
+    fn increment(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+pub struct PathParam<T>(pub T);
+
+impl<T, B> FromRequest<B> for PathParam<T>
+where
+    T: 'static,
+    T: TryFrom<String>,
+    <T as TryFrom<String>>::Error: std::error::Error + Sync + Send,
+{
+    fn from_request(mut req: Request<B>) -> anyhow::Result<Self> {
+        let path = req.uri().to_string();
+        let extensions = req.extensions_mut();
+
+        let segments = extensions
+            .get::<HashMap<usize, usize>>()
+            .context("no segments provided")?
+            .clone();
+
+        let binding = PathParamOrdering(0);
+        let ordering = extensions.get::<PathParamOrdering>().unwrap_or(&binding);
+
+        dbg!(&segments);
+
+        let order_in_path = segments
+            .get(&ordering.0)
+            .context("no value for wanted ordering")?;
+
+        let value_to_parse = path
+            .split('/')
+            .nth(*order_in_path + 1) // +1 because we have to skip first '/' as path starts with that.
+            .context("invalid value from a string")?;
+
+        let parsed = PathParam(T::try_from(value_to_parse.to_string())?);
+
+        extensions.insert(ordering.increment());
+
+        Ok(parsed)
     }
 }
