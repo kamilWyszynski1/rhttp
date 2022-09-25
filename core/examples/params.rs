@@ -1,7 +1,6 @@
 use core::request::ContentType;
 use core::request::Json;
 use core::server::Server;
-use hyper::body::Bytes;
 use hyper::Body;
 use hyper::Request;
 use serde::{Deserialize, Serialize};

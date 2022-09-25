@@ -13,17 +13,20 @@ impl Client {
         Self { routes }
     }
 
-    pub fn send(&self, request: Request<Body>) -> anyhow::Result<impl Responder> {
-        Ok(self
+    pub fn send(&self, mut request: Request<Body>) -> anyhow::Result<impl Responder> {
+        let route = self
             .routes
             .get(request.method())
             .with_context(|| format!("not registered routes for {:?} method", request.method()))?
             .iter()
             .find(|route| route.should_fire_on_path(request.uri().to_string()))
             .context("no matching route")?
-            .clone()
-            .service
-            .0
-            .call(request))
+            .clone();
+
+        request
+            .extensions_mut()
+            .insert(route.metadata.param_segments);
+
+        Ok(route.service.0.call(request))
     }
 }

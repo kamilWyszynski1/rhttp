@@ -1,7 +1,7 @@
 use crate::{
+    handler::{BoxCloneService, HandlerTrait},
     middleware::Middleware,
-    request::FromRequest,
-    response::{Responder, Response},
+    response::Response,
 };
 use anyhow::{bail, Context};
 use hyper::{Body, Method, Request};
@@ -9,124 +9,20 @@ use log::error;
 use std::{
     collections::HashMap,
     io::{Read, Write},
-    marker::PhantomData,
     net::{TcpListener, TcpStream},
     sync::Arc,
     thread,
 };
 
-/// Trait implemented by transition handler's state.
-/// Introduced to have handlers that are generic only over R type.
-pub trait Service<R> {
-    type Response;
-
-    /// Calls service's logic.
-    fn call(&self, req: R) -> Self::Response;
-}
-
-/// Transition state for handler, it helps 'hide' Q type that is specific
-/// for various types of functions(with different amount of parameters).
-///
-/// IntoService implements Service trait and this way it's responsible for
-/// calling handler effectively calling wanted handler's logic.
-pub struct IntoService<H, Q, B> {
-    handler: H,
-    _marker: PhantomData<fn() -> (Q, B)>,
-}
-
-impl<H, Q, B> Service<Request<B>> for IntoService<H, Q, B>
-where
-    H: HandlerTrait<Q, B>,
-{
-    type Response = Response;
-
-    fn call(&self, req: Request<B>) -> Self::Response {
-        self.handler.handle(req)
-    }
-}
-
-impl<B> Service<Request<B>> for () {
-    type Response = ();
-
-    fn call(&self, _req: Request<B>) -> Self::Response {}
-}
-
-/// Main 'entrypoint' for crate handlers. Various types of functions
-/// can implement this trait to be passed to Server as handlers.
-/// This trait itself does not represent 'final' state of handler,
-/// `into_service` function has to be called to turn Self into
-/// `IntoService` which is responsible for calling handler's logic.
-pub trait HandlerTrait<Q, B = Body>: Sized + Send + Sync + 'static {
-    /// User defined logic.
-    fn handle(&self, request: Request<B>) -> Response;
-
-    /// Turns Self into `IntoService`.
-    fn into_service(self) -> IntoService<Self, Q, B>;
-}
-
-impl<F, B, R, Q> HandlerTrait<(Q, B), B> for F
-where
-    R: Responder + 'static,
-    Q: FromRequest<B>,
-    F: Fn(Q) -> R + Send + Sync + 'static,
-{
-    fn handle(&self, request: Request<B>) -> Response {
-        let q = Q::from_request(request).unwrap();
-        match self(q).into_response() {
-            Ok(response) => response,
-            Err(_e) => Response::default(),
-        }
-    }
-
-    fn into_service(self) -> IntoService<Self, (Q, B), B> {
-        IntoService {
-            handler: self,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<F, B, R> HandlerTrait<((),), B> for F
-where
-    R: Responder + 'static,
-    F: Fn() -> R + Send + Sync + 'static,
-{
-    fn handle(&self, _request: Request<B>) -> Response {
-        match self().into_response() {
-            Ok(response) => response,
-            Err(_e) => Response::default(),
-        }
-    }
-    fn into_service(self) -> IntoService<Self, ((),), B> {
-        IntoService {
-            handler: self,
-            _marker: PhantomData,
-        }
-    }
-}
-
-impl<B> HandlerTrait<(), B> for () {
-    fn handle(&self, _request: Request<B>) -> Response {
-        Response::default()
-    }
-
-    fn into_service(self) -> IntoService<Self, (), B> {
-        IntoService {
-            handler: (),
-            _marker: PhantomData,
-        }
-    }
-}
-
 #[derive(Debug, Default, Clone)]
-struct RouteMetadata {
+pub struct RouteMetadata {
     /// Original, registered path.
     origin: String,
 
     /// Holds params' segments index counted as place after '/' character.
     ///
-    /// `/test/<param1>/<param2>` - {"param1": 1, "param2": 2}.
-    param_segments: HashMap<String, u8>,
+    /// `/test/<param1>/<param2>` -{ 0: 1, 1: 2 }.
+    pub param_segments: HashMap<usize, usize>,
 }
 
 impl TryFrom<String> for RouteMetadata {
@@ -140,11 +36,12 @@ impl TryFrom<String> for RouteMetadata {
     }
 }
 
-fn parse_param_segments(value: String) -> anyhow::Result<HashMap<String, u8>> {
-    let mut param_segments: HashMap<String, u8> = HashMap::new();
+fn parse_param_segments(value: String) -> anyhow::Result<HashMap<usize, usize>> {
+    let mut param_segments: HashMap<usize, usize> = HashMap::new();
     let mut segment = String::new();
     let mut beginning_found = false;
     let mut slash_counter = 0;
+    let mut found = 0;
 
     for c in value.chars() {
         match c {
@@ -156,7 +53,8 @@ fn parse_param_segments(value: String) -> anyhow::Result<HashMap<String, u8>> {
             '>' => {
                 beginning_found = false;
                 // slash_counter - 1 because we don't want to consider starting '/'
-                param_segments.insert(segment.clone(), slash_counter - 1);
+                param_segments.insert(found, slash_counter - 1);
+                found += 1;
                 segment.clear();
                 continue;
             }
@@ -175,34 +73,12 @@ fn parse_param_segments(value: String) -> anyhow::Result<HashMap<String, u8>> {
     Ok(param_segments)
 }
 
-pub struct BoxCloneService<T, U>(pub Box<dyn Service<T, Response = U> + Send + Sync>);
-
-impl<T, U> BoxCloneService<T, U> {
-    pub fn new<S>(service: S) -> Self
-    where
-        S: Service<T, Response = U> + Send + Sync + 'static,
-    {
-        Self(Box::new(service))
-    }
-}
-
-impl<H, Q, B> From<IntoService<H, Q, B>> for BoxCloneService<Request<B>, Response>
-where
-    B: 'static,
-    Q: 'static,
-    H: HandlerTrait<Q, B>,
-{
-    fn from(val: IntoService<H, Q, B>) -> Self {
-        BoxCloneService::new(val)
-    }
-}
-
 #[derive(Clone)]
 pub struct Route {
     pub service: Arc<BoxCloneService<Request<Body>, Response>>,
 
     /// Contains metadata about registered route.
-    meta: RouteMetadata,
+    pub metadata: RouteMetadata,
 }
 
 impl Route {
@@ -214,7 +90,7 @@ impl Route {
         let path: String = path.into();
         Ok(Self {
             service: Arc::new(handler),
-            meta: RouteMetadata::try_from(path)?,
+            metadata: RouteMetadata::try_from(path)?,
         })
     }
 
@@ -226,7 +102,7 @@ impl Route {
     pub fn should_fire_on_path<S: ToString>(&self, path: S) -> bool {
         let path = path.to_string();
         let mut split_path = path.split('/');
-        let mut split_route = self.meta.origin.split('/');
+        let mut split_route = self.metadata.origin.split('/');
 
         for p in split_path.by_ref() {
             let r = match split_route.next() {
@@ -303,6 +179,10 @@ impl Server {
             m.on_request(&mut request)?;
         }
 
+        dbg!("injection: {:?}", &route.metadata);
+        request
+            .extensions_mut()
+            .insert(route.metadata.param_segments);
         let mut response = route.service.0.call(request);
 
         for m in &self.middlewares {
@@ -428,10 +308,8 @@ fn httparse_req_to_hyper_request(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use crate::{
-        request::{ContentType, Host, Json},
+        request::{ContentType, Host, Json, PathParam, TypedHeader},
         response::Responder,
         response::Response,
         server::{HandlerTrait, Route},
@@ -440,6 +318,7 @@ mod tests {
     use hyper::{Body, Request};
     use hyper::{Method, StatusCode};
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
 
     #[test]
     fn test_should_fire_on_path() {
@@ -465,6 +344,22 @@ mod tests {
         assert!(!r.should_fire_on_path("/"));
     }
 
+    #[derive(Serialize, Deserialize)]
+    struct OwnBody {
+        val: String,
+        val2: i32,
+        val3: bool,
+    }
+
+    impl Responder for OwnBody {
+        fn into_response(self) -> anyhow::Result<Response> {
+            Ok(Response::build()
+                .status(StatusCode::OK)
+                .body(serde_json::to_string(&self)?)
+                .finalize())
+        }
+    }
+
     #[test]
     fn test_with_client() -> anyhow::Result<()> {
         fn empty() {}
@@ -481,22 +376,6 @@ mod tests {
             Ok("ok")
         }
 
-        #[derive(Serialize, Deserialize)]
-        struct OwnBody {
-            val: String,
-            val2: i32,
-            val3: bool,
-        }
-
-        impl Responder for OwnBody {
-            fn into_response(self) -> anyhow::Result<Response> {
-                Ok(Response::build()
-                    .status(StatusCode::OK)
-                    .body(serde_json::to_string(&self)?)
-                    .finalize())
-            }
-        }
-
         fn body_handler_json(Json(body): Json<OwnBody>) -> anyhow::Result<OwnBody> {
             Ok(body)
         }
@@ -509,6 +388,10 @@ mod tests {
             host
         }
 
+        fn param_handler(PathParam(user): PathParam<String>) -> String {
+            user
+        }
+
         let client = Client::new(HashMap::from([
             (
                 Method::GET,
@@ -519,6 +402,7 @@ mod tests {
                     Route::new("/result", result.into_service().into())?,
                     Route::new("/content-type", content_type_handler.into_service().into())?,
                     Route::new("/host", host_handler.into_service().into())?,
+                    Route::new("/param/<user>", param_handler.into_service().into())?,
                 ],
             ),
             (
@@ -612,6 +496,93 @@ mod tests {
             Response::build()
                 .status(StatusCode::OK)
                 .body("testing-space")
+                .finalize()
+        );
+
+        assert_eq!(
+            client
+                .send(
+                    Request::get("/param/test-user")
+                        .body(Body::default())
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body("test-user")
+                .finalize()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_client_2_param_handlers() -> anyhow::Result<()> {
+        fn handler(PathParam(user): PathParam<String>, Json(mut body): Json<OwnBody>) -> OwnBody {
+            body.val = user;
+            body
+        }
+
+        let client = Client::new(HashMap::from([(
+            Method::POST,
+            vec![Route::new("/body/<user>", handler.into_service().into())?],
+        )]));
+
+        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
+        let changed_body = r#"{"val":"username","val2":123,"val3":true}"#;
+        assert_eq!(
+            client
+                .send(
+                    Request::post("/body/username")
+                        .body(Body::from(body))
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body(changed_body)
+                .finalize()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_client_3_param_handlers() -> anyhow::Result<()> {
+        fn handler(
+            PathParam(user): PathParam<String>,
+            PathParam(id): PathParam<i32>,
+            Json(mut body): Json<OwnBody>,
+        ) -> OwnBody {
+            body.val = user;
+            body.val2 = id;
+            body
+        }
+
+        let client = Client::new(HashMap::from([(
+            Method::POST,
+            vec![Route::new(
+                "/body/<user>/<id>",
+                handler.into_service().into(),
+            )?],
+        )]));
+
+        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
+        let changed_body = r#"{"val":"username","val2":100,"val3":true}"#;
+        assert_eq!(
+            client
+                .send(
+                    Request::post("/body/username/100")
+                        .body(Body::from(body))
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body(changed_body)
                 .finalize()
         );
 

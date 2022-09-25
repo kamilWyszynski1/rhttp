@@ -1,3 +1,5 @@
+use std::{collections::HashMap, str::FromStr};
+
 use anyhow::{Context, Ok};
 use hyper::{
     body::Bytes,
@@ -7,8 +9,13 @@ use hyper::{
 };
 use serde::de::DeserializeOwned;
 
+mod private {
+    #[derive(Debug, Clone, Copy)]
+    pub enum ViaRequest {}
+}
+
 /// Allows various types to be created from Request.
-pub trait FromRequest<B>: Sized {
+pub trait FromRequest<B, M = private::ViaRequest>: Sized {
     fn from_request(req: Request<B>) -> anyhow::Result<Self>;
 }
 
@@ -87,7 +94,7 @@ pub trait TypedHeader: Sized {
 
     /// Default implementation that uses `key` and `try_from_header_value` functions
     /// to turn `map: HeaderMap<HeaderValue>` into `anyhow::Result<Self>`.
-    fn try_from_header_map(map: HeaderMap<HeaderValue>) -> anyhow::Result<Self> {
+    fn try_from_header_map(map: &HeaderMap<HeaderValue>) -> anyhow::Result<Self> {
         Self::try_from_header_value(map.get(Self::key()).context("header not found")?)
     }
 }
@@ -114,8 +121,11 @@ derive_header!(ContentType(_), name: CONTENT_TYPE);
 pub struct Host(pub String);
 derive_header!(Host(_), name: HOST);
 
-trait FromRequestParts: Sized {
-    fn from_request_parts(parts: Parts) -> anyhow::Result<Self>;
+/// Types that implements this trait can be created from request's parts.
+/// This trait shouldn't be used directly, rather than that use some of its
+/// implementations like TypedHeader or PathParam.
+pub trait FromRequestParts: Sized {
+    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self>;
 }
 
 /// Implement FromRequestParts for every type that implements TypedHeader trait.  
@@ -123,8 +133,8 @@ impl<T> FromRequestParts for T
 where
     T: TypedHeader,
 {
-    fn from_request_parts(parts: Parts) -> anyhow::Result<Self> {
-        T::try_from_header_map(parts.headers)
+    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+        T::try_from_header_map(&parts.headers)
     }
 }
 
@@ -136,7 +146,69 @@ where
     T: FromRequestParts,
 {
     fn from_request(req: Request<B>) -> anyhow::Result<Self> {
-        let (b, _) = req.into_parts();
-        T::from_request_parts(b)
+        let (mut b, _) = req.into_parts();
+        T::from_request_parts(&mut b)
+    }
+}
+
+/// PathParamOrdering wrapper type for storing state of what params were already read.
+#[derive(Default, Clone, Copy)]
+struct PathParamOrdering(usize);
+
+impl PathParamOrdering {
+    fn increment(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+/// Container for values that are retrieved from query params.
+/// If inner type implements FromStr trait this container can be used
+/// in handler to get direct access for query param value.
+///
+/// ```rust
+/// use core::request::PathParam;
+/// use core::server::Server;
+///
+/// fn handler(PathParam(name): PathParam<String>) {}
+///
+/// Server::new("127.0.0.1", 8080).get("/<name>", handler);
+/// ```
+pub struct PathParam<T>(pub T);
+
+impl<T> FromRequestParts for PathParam<T>
+where
+    T: 'static,
+    T: FromStr,
+    <T as FromStr>::Err: std::error::Error + Sync + Send,
+{
+    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+        let path = parts.uri.to_string();
+
+        let segments = parts
+            .extensions
+            .get::<HashMap<usize, usize>>()
+            .context("no segments provided")?
+            .clone();
+
+        let binding = PathParamOrdering(0);
+        let ordering = parts
+            .extensions
+            .get::<PathParamOrdering>()
+            .unwrap_or(&binding);
+
+        let order_in_path = segments
+            .get(&ordering.0)
+            .context("no value for wanted ordering")?;
+
+        let value_to_parse = path
+            .split('/')
+            .nth(*order_in_path + 1) // +1 because we have to skip first '/' as path starts with that.
+            .context("invalid value from a string")?;
+
+        let parsed = PathParam(T::from_str(value_to_parse)?);
+
+        parts.extensions.insert(ordering.increment());
+
+        Ok(parsed)
     }
 }
