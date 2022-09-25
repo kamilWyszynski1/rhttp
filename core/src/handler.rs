@@ -1,5 +1,5 @@
 use crate::{
-    request::FromRequest,
+    request::{FromRequest, FromRequestParts},
     response::{Responder, Response},
 };
 use hyper::{Body, Request};
@@ -51,30 +51,93 @@ pub trait HandlerTrait<Q, B = Body>: Sized + Send + Sync + 'static {
     fn handle(&self, request: Request<B>) -> Response;
 
     /// Turns Self into `IntoService`.
-    fn into_service(self) -> IntoService<Self, Q, B>;
-}
-
-impl<F, B, R, Q> HandlerTrait<(Q, B), B> for F
-where
-    R: Responder + 'static,
-    Q: FromRequest<B>,
-    F: Fn(Q) -> R + Send + Sync + 'static,
-{
-    fn handle(&self, request: Request<B>) -> Response {
-        let q = Q::from_request(request).unwrap();
-        match self(q).into_response() {
-            Ok(response) => response,
-            Err(_e) => Response::default(),
-        }
-    }
-
-    fn into_service(self) -> IntoService<Self, (Q, B), B> {
+    fn into_service(self) -> IntoService<Self, Q, B> {
         IntoService {
             handler: self,
             _marker: PhantomData,
         }
     }
 }
+
+impl<F, B, R, T1, M> HandlerTrait<(T1, M), B> for F
+where
+    R: Responder + 'static,
+    T1: FromRequest<B, M>,
+    F: Fn(T1) -> R + Send + Sync + 'static,
+{
+    fn handle(&self, request: Request<B>) -> Response {
+        let q = T1::from_request(request).unwrap();
+        match self(q).into_response() {
+            Ok(response) => response,
+            Err(_e) => Response::default(),
+        }
+    }
+
+    fn into_service(self) -> IntoService<Self, (T1, M), B> {
+        IntoService {
+            handler: self,
+            _marker: PhantomData,
+        }
+    }
+}
+
+macro_rules! implement_handler_trait {
+    ([$($ty:ident),*], $last:ident) => {
+        impl<F, B, R, $($ty),*, $last, M> HandlerTrait<($($ty),*, $last, M), B> for F
+        where
+            R: Responder + 'static,
+            $($ty),*:FromRequestParts,
+            $last: FromRequest<B, M>,
+            F: Fn($($ty),*, $last) -> R + Send + Sync + 'static
+        {
+            fn handle(&self, request: Request<B>) -> Response {
+                let (mut parts, body) = request.into_parts();
+
+                match self(
+                    $(
+                        $ty::from_request_parts(&mut parts).unwrap(),
+                    )*
+                    $last::from_request(Request::from_parts(parts, body)).unwrap(),
+                )
+                .into_response()
+                {
+                    Ok(response) => response,
+                    Err(_e) => Response::default(),
+                }
+            }
+        }
+    };
+}
+
+implement_handler_trait!([T1], T2);
+
+// impl<F, B, R, T1, T2, M> HandlerTrait<(T1, T2, M), B> for F
+// where
+//     R: Responder + 'static,
+//     T1: FromRequestParts,
+//     T2: FromRequest<B, M>,
+//     F: Fn(T1, T2) -> R + Send + Sync + 'static,
+// {
+//     fn handle(&self, request: Request<B>) -> Response {
+//         let (mut parts, body) = request.into_parts();
+//         match self(
+//             T1::from_request_parts(&mut parts).unwrap(),
+//             T2::from_request(Request::from_parts(parts, body)).unwrap(),
+//         )
+//         .into_response()
+//         {
+//             Ok(response) => response,
+//             Err(_e) => Response::default(),
+//         }
+//     }
+
+//     fn into_service(self) -> IntoService<Self, (T1, T2, M), B> {
+//         IntoService {
+//             handler: self,
+//             _marker: PhantomData,
+//         }
+//     }
+// }
 
 impl<F, B, R> HandlerTrait<((),), B> for F
 where

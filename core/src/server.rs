@@ -306,7 +306,7 @@ fn httparse_req_to_hyper_request(
     Ok(builder.body(Body::from(body))?)
 }
 
-#[cfg(test)]
+// #[cfg(test)]
 mod tests {
     use crate::{
         request::{ContentType, Host, Json, PathParam},
@@ -344,6 +344,22 @@ mod tests {
         assert!(!r.should_fire_on_path("/"));
     }
 
+    #[derive(Serialize, Deserialize)]
+    struct OwnBody {
+        val: String,
+        val2: i32,
+        val3: bool,
+    }
+
+    impl Responder for OwnBody {
+        fn into_response(self) -> anyhow::Result<Response> {
+            Ok(Response::build()
+                .status(StatusCode::OK)
+                .body(serde_json::to_string(&self)?)
+                .finalize())
+        }
+    }
+
     #[test]
     fn test_with_client() -> anyhow::Result<()> {
         fn empty() {}
@@ -358,22 +374,6 @@ mod tests {
 
         fn result() -> anyhow::Result<&'static str> {
             Ok("ok")
-        }
-
-        #[derive(Serialize, Deserialize)]
-        struct OwnBody {
-            val: String,
-            val2: i32,
-            val3: bool,
-        }
-
-        impl Responder for OwnBody {
-            fn into_response(self) -> anyhow::Result<Response> {
-                Ok(Response::build()
-                    .status(StatusCode::OK)
-                    .body(serde_json::to_string(&self)?)
-                    .finalize())
-            }
         }
 
         fn body_handler_json(Json(body): Json<OwnBody>) -> anyhow::Result<OwnBody> {
@@ -511,6 +511,38 @@ mod tests {
             Response::build()
                 .status(StatusCode::OK)
                 .body("test-user")
+                .finalize()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_client_2_param_handlers() -> anyhow::Result<()> {
+        fn handler(PathParam(user): PathParam<String>, Json(mut body): Json<OwnBody>) -> OwnBody {
+            body.val = user;
+            body
+        }
+
+        let client = Client::new(HashMap::from([(
+            Method::POST,
+            vec![Route::new("/body/<user>", handler.into_service().into())?],
+        )]));
+
+        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
+        let changed_body = r#"{"val":"username","val2":123,"val3":true}"#;
+        assert_eq!(
+            client
+                .send(
+                    Request::post("/body/username")
+                        .body(Body::from(body))
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body(changed_body)
                 .finalize()
         );
 
