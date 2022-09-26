@@ -19,7 +19,7 @@ impl Client {
             .get(request.method())
             .with_context(|| format!("not registered routes for {:?} method", request.method()))?
             .iter()
-            .find(|route| route.should_fire_on_path(request.uri().to_string()))
+            .find(|route| route.should_fire_on_path(request.uri().path()))
             .context("no matching route")?
             .clone();
 

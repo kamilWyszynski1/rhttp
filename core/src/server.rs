@@ -171,7 +171,7 @@ impl Server {
             .get(request.method())
             .with_context(|| format!("not registered routes for {:?} method", request.method()))?
             .iter()
-            .find(|route| route.should_fire_on_path(request.uri().to_string()))
+            .find(|route| route.should_fire_on_path(request.uri().path()))
             .context("no matching route")?
             .clone();
 
@@ -309,7 +309,7 @@ fn httparse_req_to_hyper_request(
 #[cfg(test)]
 mod tests {
     use crate::{
-        request::{ContentType, Host, Json, PathParam, TypedHeader},
+        request::{ContentType, Host, Json, PathParam, Query},
         response::Responder,
         response::Response,
         server::{HandlerTrait, Route},
@@ -583,6 +583,43 @@ mod tests {
             Response::build()
                 .status(StatusCode::OK)
                 .body(changed_body)
+                .finalize()
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn handler_query() -> anyhow::Result<()> {
+        #[derive(Serialize, Deserialize)]
+        struct QueryParams {
+            val: String,
+            name: String,
+            age: i32,
+        }
+
+        fn handler(Query(params): Query<QueryParams>) -> String {
+            serde_json::to_string(&params).unwrap()
+        }
+
+        let client = Client::new(HashMap::from([(
+            Method::GET,
+            vec![Route::new("/test", handler.into_service().into())?],
+        )]));
+
+        let body = r#"{"val":"value","name":"john","age":123}"#;
+        assert_eq!(
+            client
+                .send(
+                    Request::get("/test?val=value&name=john&age=123")
+                        .body(Body::default())
+                        .unwrap()
+                )
+                .unwrap()
+                .into_response()?,
+            Response::build()
+                .status(StatusCode::OK)
+                .body(body)
                 .finalize()
         );
 

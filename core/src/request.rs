@@ -1,5 +1,3 @@
-use std::{collections::HashMap, str::FromStr};
-
 use anyhow::{Context, Ok};
 use hyper::{
     body::Bytes,
@@ -8,6 +6,7 @@ use hyper::{
     Body, HeaderMap, Request,
 };
 use serde::de::DeserializeOwned;
+use std::{collections::HashMap, str::FromStr};
 
 mod private {
     #[derive(Debug, Clone, Copy)]
@@ -210,5 +209,55 @@ where
         parts.extensions.insert(ordering.increment());
 
         Ok(parsed)
+    }
+}
+
+/// Container for query value retrieved from an url.
+///
+/// ```rust
+/// use core::request::Query;
+///
+/// // /test?param=value
+/// fn handler(Query(param): Query<String>) {}
+/// ```
+/// T can be used to parse query value if it implements [`serde::Deserialize`] trait.
+///
+/// ```rust
+/// use serde::Deserialize;
+/// use core::request::Query;
+///
+/// #[derive(Deserialize)]
+/// struct OwnParams {
+///     name: String,
+///     age: i32,
+///     is_male: bool
+/// }
+///
+/// // /test?name=John&age=23&is_male=true
+/// fn handler(Query(own): Query<OwnParams>) {}
+/// ```
+pub struct Query<T>(pub T);
+
+impl<T> FromRequestParts for Query<T>
+where
+    T: DeserializeOwned,
+{
+    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+        Ok(Query(serde_urlencoded::from_str(
+            parts.uri.query().context("not queries provided")?,
+        )?))
+    }
+}
+
+/// Implement this trait for [`hyper::HeaderMap`] in order to use it directly in handler.
+/// 
+/// ```rust
+/// use hyper::HeaderMap;
+/// 
+/// fn handler(headers: HeaderMap) {}
+/// ```
+impl FromRequestParts for HeaderMap {
+    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+        Ok(parts.headers.clone())
     }
 }
