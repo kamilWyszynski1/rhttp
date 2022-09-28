@@ -1,9 +1,9 @@
 use crate::{
     handler::{BoxCloneService, HandlerTrait},
     middleware::Middleware,
-    response::Response,
+    response::{response_to_bytes, Response},
 };
-use anyhow::{bail, Context};
+use anyhow::{bail, Context, Ok};
 use hyper::{Body, Method, Request};
 use log::error;
 use std::{
@@ -124,6 +124,7 @@ impl Route {
     }
 }
 
+#[derive(Default)]
 pub struct Server {
     host: String,
     port: u32,
@@ -145,6 +146,14 @@ impl Server {
         }
     }
 
+    /// Creates new server with given routes. Should be used only internally for testing.
+    pub fn new_with_routes(routes: HashMap<Method, Vec<Route>>) -> Self {
+        Self {
+            routes,
+            ..Default::default()
+        }
+    }
+
     /// Starts server,
     pub fn run(self) -> anyhow::Result<()> {
         let listener = TcpListener::bind(format!("{}:{}", self.host, self.port))?;
@@ -163,9 +172,22 @@ impl Server {
         Ok(())
     }
 
-    // Calls route's handler and pass response to function that writes to opened stream.
+    /// Calls route's handler and pass response to function that writes to opened stream.
     fn handle(&self, mut stream: TcpStream) -> anyhow::Result<()> {
-        let mut request = parse_request_from_tcp(&mut stream)?;
+        let response = self.fire::<TcpStream>(parse_request_from_tcp(&mut stream)?)?;
+
+        let response_bytes: Vec<u8> = response_to_bytes(response)?;
+        stream.write_all(&response_bytes)?;
+
+        Ok(())
+    }
+
+    /// Method that runs whole server's logic. Takes Write trait
+    /// implementation in order to mock it during testing.
+    pub fn fire<W>(&self, mut request: Request<Body>) -> anyhow::Result<Response>
+    where
+        W: std::io::Write,
+    {
         let route = self
             .routes
             .get(request.method())
@@ -179,21 +201,28 @@ impl Server {
             m.on_request(&mut request)?;
         }
 
-        dbg!("injection: {:?}", &route.metadata);
-        request
-            .extensions_mut()
-            .insert(route.metadata.param_segments);
+        let extensions = request.extensions_mut();
+        extensions.insert(route.metadata.param_segments);
+        // extensions.insert(self.state.clone());
+
         let mut response = route.service.0.call(request);
 
         for m in &self.middlewares {
             m.on_response(&mut response)?;
         }
 
-        let response_bytes: Vec<u8> = response.into();
-        stream.write_all(&response_bytes)?;
-
-        Ok(())
+        Ok(response)
     }
+
+    // pub fn state<S>(self, state: S) -> anyhow::Result<Self>
+    // where
+    //     S: Send + Sync + 'static,
+    // {
+    //     if !self.state.set(state) {
+    //         bail!("invalid state set")
+    //     }
+    //     Ok(self)
+    // }
 
     /// Registers GET route.
     pub fn get<Q, S, H>(mut self, path: S, handler: H) -> Self
@@ -308,17 +337,7 @@ fn httparse_req_to_hyper_request(
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        request::{ContentType, Host, Json, PathParam, Query},
-        response::Responder,
-        response::Response,
-        server::{HandlerTrait, Route},
-        testing::Client,
-    };
-    use hyper::{Body, Request};
-    use hyper::{Method, StatusCode};
-    use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    use crate::server::{HandlerTrait, Route};
 
     #[test]
     fn test_should_fire_on_path() {
@@ -342,287 +361,5 @@ mod tests {
         assert!(r.should_fire_on_path("/test/1/2"));
         assert!(!r.should_fire_on_path("/test/test"));
         assert!(!r.should_fire_on_path("/"));
-    }
-
-    #[derive(Serialize, Deserialize)]
-    struct OwnBody {
-        val: String,
-        val2: i32,
-        val3: bool,
-    }
-
-    impl Responder for OwnBody {
-        fn into_response(self) -> anyhow::Result<Response> {
-            Ok(Response::build()
-                .status(StatusCode::OK)
-                .body(serde_json::to_string(&self)?)
-                .finalize())
-        }
-    }
-
-    #[test]
-    fn test_with_client() -> anyhow::Result<()> {
-        fn empty() {}
-
-        fn str() -> &'static str {
-            "hello"
-        }
-
-        fn string() -> String {
-            String::from("hello")
-        }
-
-        fn result() -> anyhow::Result<&'static str> {
-            Ok("ok")
-        }
-
-        fn body_handler_json(Json(body): Json<OwnBody>) -> anyhow::Result<OwnBody> {
-            Ok(body)
-        }
-
-        fn content_type_handler(ContentType(content_type): ContentType) -> String {
-            content_type
-        }
-
-        fn host_handler(Host(host): Host) -> String {
-            host
-        }
-
-        fn param_handler(PathParam(user): PathParam<String>) -> String {
-            user
-        }
-
-        let client = Client::new(HashMap::from([
-            (
-                Method::GET,
-                vec![
-                    Route::new("/", empty.into_service().into())?,
-                    Route::new("/str", str.into_service().into())?,
-                    Route::new("/string", string.into_service().into())?,
-                    Route::new("/result", result.into_service().into())?,
-                    Route::new("/content-type", content_type_handler.into_service().into())?,
-                    Route::new("/host", host_handler.into_service().into())?,
-                    Route::new("/param/<user>", param_handler.into_service().into())?,
-                ],
-            ),
-            (
-                Method::POST,
-                vec![Route::new(
-                    "/body",
-                    body_handler_json.into_service().into(),
-                )?],
-            ),
-        ]));
-
-        assert_eq!(
-            client
-                .send(Request::get("/").body(Body::default()).unwrap())
-                .unwrap()
-                .into_response()?,
-            Response::build().status(StatusCode::OK).finalize()
-        );
-
-        assert_eq!(
-            client
-                .send(Request::get("/str").body(Body::default()).unwrap())
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body("hello")
-                .finalize()
-        );
-
-        assert_eq!(
-            client
-                .send(Request::get("/string").body(Body::default()).unwrap())
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body("hello")
-                .finalize()
-        );
-
-        assert_eq!(
-            client
-                .send(Request::get("/result").body(Body::default()).unwrap())
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body("ok")
-                .finalize()
-        );
-
-        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
-        assert_eq!(
-            client
-                .send(Request::post("/body").body(Body::from(body)).unwrap())
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body(body)
-                .finalize()
-        );
-
-        assert_eq!(
-            client
-                .send(
-                    Request::get("/content-type")
-                        .header(hyper::header::CONTENT_TYPE, "application/json")
-                        .body(Body::default())
-                        .unwrap()
-                )
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body("application/json")
-                .finalize()
-        );
-
-        assert_eq!(
-            client
-                .send(
-                    Request::get("/host")
-                        .header(hyper::header::HOST, "testing-space")
-                        .body(Body::default())
-                        .unwrap()
-                )
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body("testing-space")
-                .finalize()
-        );
-
-        assert_eq!(
-            client
-                .send(
-                    Request::get("/param/test-user")
-                        .body(Body::default())
-                        .unwrap()
-                )
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body("test-user")
-                .finalize()
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_with_client_2_param_handlers() -> anyhow::Result<()> {
-        fn handler(PathParam(user): PathParam<String>, Json(mut body): Json<OwnBody>) -> OwnBody {
-            body.val = user;
-            body
-        }
-
-        let client = Client::new(HashMap::from([(
-            Method::POST,
-            vec![Route::new("/body/<user>", handler.into_service().into())?],
-        )]));
-
-        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
-        let changed_body = r#"{"val":"username","val2":123,"val3":true}"#;
-        assert_eq!(
-            client
-                .send(
-                    Request::post("/body/username")
-                        .body(Body::from(body))
-                        .unwrap()
-                )
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body(changed_body)
-                .finalize()
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_with_client_3_param_handlers() -> anyhow::Result<()> {
-        fn handler(
-            PathParam(user): PathParam<String>,
-            PathParam(id): PathParam<i32>,
-            Json(mut body): Json<OwnBody>,
-        ) -> OwnBody {
-            body.val = user;
-            body.val2 = id;
-            body
-        }
-
-        let client = Client::new(HashMap::from([(
-            Method::POST,
-            vec![Route::new(
-                "/body/<user>/<id>",
-                handler.into_service().into(),
-            )?],
-        )]));
-
-        let body = r#"{"val":"string value","val2":123,"val3":true}"#;
-        let changed_body = r#"{"val":"username","val2":100,"val3":true}"#;
-        assert_eq!(
-            client
-                .send(
-                    Request::post("/body/username/100")
-                        .body(Body::from(body))
-                        .unwrap()
-                )
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body(changed_body)
-                .finalize()
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn handler_query() -> anyhow::Result<()> {
-        #[derive(Serialize, Deserialize)]
-        struct QueryParams {
-            val: String,
-            name: String,
-            age: i32,
-        }
-
-        fn handler(Query(params): Query<QueryParams>) -> String {
-            serde_json::to_string(&params).unwrap()
-        }
-
-        let client = Client::new(HashMap::from([(
-            Method::GET,
-            vec![Route::new("/test", handler.into_service().into())?],
-        )]));
-
-        let body = r#"{"val":"value","name":"john","age":123}"#;
-        assert_eq!(
-            client
-                .send(
-                    Request::get("/test?val=value&name=john&age=123")
-                        .body(Body::default())
-                        .unwrap()
-                )
-                .unwrap()
-                .into_response()?,
-            Response::build()
-                .status(StatusCode::OK)
-                .body(body)
-                .finalize()
-        );
-
-        Ok(())
     }
 }

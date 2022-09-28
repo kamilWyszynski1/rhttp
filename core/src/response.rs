@@ -1,9 +1,52 @@
-use std::collections::HashMap;
+use bytes::{BufMut, Bytes, BytesMut};
+use hyper::{Body, StatusCode};
 
-use hyper::{StatusCode, Version};
+pub type Response = hyper::Response<Body>;
 
 pub trait Responder {
     fn into_response(self) -> anyhow::Result<Response>;
+}
+
+pub fn body_to_bytes(body: Body) -> anyhow::Result<Bytes> {
+    let body_bytes = futures_executor::block_on(hyper::body::to_bytes(body))?;
+    Ok(body_bytes)
+}
+
+pub fn response_to_bytes(response: Response) -> anyhow::Result<Vec<u8>> {
+    use std::fmt::Write as _; // import without risk of name clashing
+
+    let mut buffer = BytesMut::with_capacity(1024 * 8); // 8kB
+
+    let status = response.status();
+
+    let (status_code, status_message) = (status.as_u16(), status.as_str());
+
+    let _ = write!(
+        &mut buffer,
+        "{:?} {} {}",
+        response.version(),
+        status_code,
+        status_message
+    );
+
+    buffer.write_char('\n')?;
+
+    for (k, v) in response.headers() {
+        let _ = writeln!(&mut buffer, "{}: ", k);
+        buffer.put(v.as_bytes());
+        buffer.write_char('\n')?;
+    }
+
+    let body_bytes = body_to_bytes(response.into_body())?;
+
+    if body_bytes.is_empty() {
+        return Ok(buffer.to_vec());
+    }
+
+    buffer.write_str("\n\n")?;
+    buffer.put(body_bytes);
+
+    Ok(buffer.to_vec())
 }
 
 /// Responder implementation for '()', returns default Response (200, HTTP1.1).
@@ -44,7 +87,7 @@ impl Responder for Response {
 /// ```
 impl<'a> Responder for &'a str {
     fn into_response(self) -> anyhow::Result<Response> {
-        Ok(Response::build().body(self.to_string()).finalize())
+        Ok(hyper::Response::builder().body(Body::from(self.to_string()))?)
     }
 }
 
@@ -62,7 +105,7 @@ impl<'a> Responder for &'a str {
 /// ```
 impl Responder for String {
     fn into_response(self) -> anyhow::Result<Response> {
-        Ok(Response::build().body(self).finalize())
+        Ok(hyper::Response::builder().body(Body::from(self))?)
     }
 }
 
@@ -73,119 +116,9 @@ where
     fn into_response(self) -> anyhow::Result<Response> {
         match self {
             Ok(r) => Ok(r.into_response()?),
-            Err(e) => Ok(Response::build()
+            Err(e) => Ok(hyper::Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(e.to_string())
-                .finalize()),
+                .body(Body::from(e.to_string()))?),
         }
-    }
-}
-
-/// Builder for Response struct.
-#[derive(Default, Debug)]
-pub struct ResponseBuilder {
-    response: Response,
-}
-
-impl ResponseBuilder {
-    /// Sets protocol field.
-    pub fn protocol(&mut self, protocol: hyper::Version) -> &mut Self {
-        self.response.protocol = protocol;
-        self
-    }
-
-    /// Sets status field.
-    pub fn status(&mut self, status: StatusCode) -> &mut Self {
-        self.response.status = status;
-        self
-    }
-
-    /// Add single header to headers field.
-    /// Call multiple times for multiple headers.
-    pub fn header<S: ToString>(&mut self, key: S, value: S) -> &mut Self {
-        self.response
-            .headers
-            .insert(key.to_string(), value.to_string());
-        self
-    }
-
-    /// Sets body field.
-    pub fn body<S: ToString>(&mut self, body: S) -> &mut Self {
-        self.response.body = Some(body.to_string());
-        self
-    }
-
-    /// Returns built Response leaving empty at that place.
-    pub fn finalize(&mut self) -> Response {
-        std::mem::take(&mut self.response)
-    }
-}
-
-/// Responses consist of the following elements:
-///
-/// * The version of the HTTP protocol they follow.
-/// * A status code, indicating if the request was successful or not, and why.
-/// * A status message, a non-authoritative short description of the status code.
-/// * HTTP headers, like those for requests.
-/// * Optionally, a body containing the fetched resource.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Response {
-    /// The HTTP protocol version used.
-    pub protocol: Version,
-
-    /// HTTP status returned.
-    pub status: StatusCode,
-
-    /// HTTP headers returned.
-    pub headers: HashMap<String, String>,
-
-    /// HTTP body content returned.
-    pub body: Option<String>,
-}
-
-impl Response {
-    pub fn build() -> ResponseBuilder {
-        ResponseBuilder::default()
-    }
-}
-
-impl Default for Response {
-    fn default() -> Self {
-        Self {
-            protocol: Version::HTTP_11,
-            status: StatusCode::OK,
-            headers: HashMap::default(),
-            body: None,
-        }
-    }
-}
-
-#[allow(clippy::from_over_into)]
-impl Into<Vec<u8>> for Response {
-    fn into(self) -> Vec<u8> {
-        use std::fmt::Write as _; // import without risk of name clashing
-
-        let mut buf = String::new();
-
-        let (status_code, status_message) = (self.status.as_u16(), self.status.as_str());
-
-        let _ = write!(
-            &mut buf,
-            "{:?} {} {}",
-            self.protocol, status_code, status_message
-        );
-
-        buf.push('\n');
-
-        for (k, v) in self.headers {
-            let _ = writeln!(&mut buf, "{}: {}", k, v);
-        }
-
-        if let Some(body) = self.body {
-            buf.push_str("\n\n");
-            buf.push_str(body.as_str())
-        }
-
-        buf.into_bytes()
     }
 }
