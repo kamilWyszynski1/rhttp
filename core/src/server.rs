@@ -1,5 +1,5 @@
 use crate::{
-    handler::{BoxCloneService, HandlerTrait},
+    handler::{BoxCloneService, HandlerTrait, Service},
     middleware::Middleware,
     response::{response_to_bytes, Response},
 };
@@ -83,10 +83,13 @@ pub struct Route {
 
 impl Route {
     /// Creates new Route, tries to parse path into RouteMetadata.
-    pub fn new<S: Into<String>>(
-        path: S,
+    pub fn new<P>(
+        path: P,
         handler: BoxCloneService<Request<Body>, Response>,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<Self>
+    where
+        P: Into<String>,
+    {
         let path: String = path.into();
         Ok(Self {
             service: Arc::new(handler),
@@ -99,7 +102,7 @@ impl Route {
     /// '/test/john/doe'  & '/test/<name>/<surn>' => true,
     /// '/test/test/      & '/test/test'          => true,
     /// '/test/test/test' & '/test/test'          => false,
-    pub fn should_fire_on_path<S: ToString>(&self, path: S) -> bool {
+    pub fn should_fire_on_path<P: ToString>(&self, path: P) -> bool {
         let path = path.to_string();
         let mut split_path = path.split('/');
         let mut split_route = self.metadata.origin.split('/');
@@ -141,8 +144,7 @@ impl Server {
         Self {
             host: host.into(),
             port,
-            routes: HashMap::new(),
-            middlewares: vec![],
+            ..Default::default()
         }
     }
 
@@ -194,16 +196,14 @@ impl Server {
             .with_context(|| format!("not registered routes for {:?} method", request.method()))?
             .iter()
             .find(|route| route.should_fire_on_path(request.uri().path()))
-            .context("no matching route")?
-            .clone();
+            .context("no matching route")?;
 
         for m in &self.middlewares {
             m.on_request(&mut request)?;
         }
 
         let extensions = request.extensions_mut();
-        extensions.insert(route.metadata.param_segments);
-        // extensions.insert(self.state.clone());
+        extensions.insert(route.metadata.param_segments.clone());
 
         let mut response = route.service.0.call(request);
 
@@ -214,80 +214,68 @@ impl Server {
         Ok(response)
     }
 
-    // pub fn state<S>(self, state: S) -> anyhow::Result<Self>
-    // where
-    //     S: Send + Sync + 'static,
-    // {
-    //     if !self.state.set(state) {
-    //         bail!("invalid state set")
-    //     }
-    //     Ok(self)
-    // }
-
     /// Registers GET route.
-    pub fn get<Q, S, H>(mut self, path: S, handler: H) -> Self
+    pub fn get<P, V, T, U>(mut self, path: P, service: V) -> Self
     where
-        Q: 'static,
-        S: Into<String>,
-        H: HandlerTrait<Q>,
+        P: Into<String>,
+        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
     {
         self.routes.entry(Method::GET).or_default().push(
-            Route::new(path, BoxCloneService::new(handler.into_service()))
+            Route::new(path, BoxCloneService::new(service))
                 .expect("tried to register invalid GET route"),
         );
         self
     }
 
     /// Registers POST route.
-    pub fn post<Q, S, H>(mut self, path: S, handler: H) -> Self
+    pub fn post<P, V, T, U>(mut self, path: P, service: V) -> Self
     where
-        Q: 'static,
-        S: Into<String>,
-        H: HandlerTrait<Q>,
+        P: Into<String>,
+        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
     {
         self.routes.entry(Method::POST).or_default().push(
-            Route::new(path, BoxCloneService::new(handler.into_service()))
+            Route::new(path, BoxCloneService::new(service))
                 .expect("tried to register invalid POST route"),
         );
         self
     }
 
-    /// Registers PUT route.
-    pub fn put<Q, S, H>(mut self, path: S, handler: H) -> Self
-    where
-        Q: 'static,
-        S: Into<String>,
-        H: HandlerTrait<Q>,
-    {
-        self.routes.entry(Method::PUT).or_default().push(
-            Route::new(path, BoxCloneService::new(handler.into_service()))
-                .expect("tried to register invalid PUT route"),
-        );
-        self
-    }
+    ///// Registers PUT route.
+    // pub fn put<Q, P, H, S>(mut self, path: P, handler: H) -> Self
+    // where
+    //     Q: 'static,
+    //     P: Into<String>,
+    //     H: HandlerTrait<Q, S>,
+    // {
+    //     self.routes.entry(Method::PUT).or_default().push(
+    //         Route::new(path, BoxCloneService::new(handler.into_service_with_state(())))
+    //             .expect("tried to register invalid PUT route"),
+    //     );
+    //     self
+    // }
 
-    /// Registers DELETE route.
-    pub fn delete<Q, S, H>(mut self, path: S, handler: H) -> Self
-    where
-        Q: 'static,
-        S: Into<String>,
-        H: HandlerTrait<Q>,
-    {
-        self.routes.entry(Method::DELETE).or_default().push(
-            Route::new(path, BoxCloneService::new(handler.into_service()))
-                .expect("tried to register invalid DELETE route"),
-        );
-        self
-    }
+    // /// Registers DELETE route.
+    // pub fn delete<Q, P, H, S>(mut self, path: P, handler: H) -> Self
+    // where
+    //     Q: 'static,
+    //     P: Into<String>,
+    //     H: HandlerTrait<Q, S>,
+    // {
+    //     self.routes.entry(Method::DELETE).or_default().push(
+    //         Route::new(path, BoxCloneService::new(handler.into_service_with_state(())))
+    //             .expect("tried to register invalid DELETE route"),
+    //     );
+    //     self
+    // }
 
-    /// Registers new middleware.
-    pub fn middleware<M>(mut self, m: M) -> Self
-    where
-        M: Middleware + 'static,
-    {
-        self.middlewares.push(Box::new(m));
-        self
-    }
+    // /// Registers new middleware.
+    // pub fn middleware<M>(mut self, m: M) -> Self
+    // where
+    //     M: Middleware + 'static,
+    // {
+    //     self.middlewares.push(Box::new(m));
+    //     self
+    // }
 }
 
 const MESSAGE_SIZE: usize = 1024;
@@ -335,28 +323,39 @@ fn httparse_req_to_hyper_request(
     Ok(builder.body(Body::from(body))?)
 }
 
-#[cfg(test)]
+// #[cfg(test)]
 mod tests {
-    use crate::server::{HandlerTrait, Route};
+    use crate::{
+        handler::BoxCloneService,
+        server::{HandlerTrait, Route},
+    };
 
     #[test]
     fn test_should_fire_on_path() {
         fn handler() {}
 
-        let r = Route::new("/test", handler.into_service().into()).expect("valid route");
+        let r = Route::new(
+            "/test",
+            BoxCloneService::new(handler.into_service_with_state(())),
+        )
+        .expect("valid route");
 
         assert!(r.should_fire_on_path("/test"));
         assert!(!r.should_fire_on_path("/test/test"));
         assert!(!r.should_fire_on_path("/"));
 
-        let r = Route::new("/test/<param1>", handler.into_service().into()).expect("valid route");
+        let r = Route::new("/test/<param1>", handler.into_service_with_state(()).into())
+            .expect("valid route");
 
         assert!(!r.should_fire_on_path("/test"));
         assert!(r.should_fire_on_path("/test/test"));
         assert!(!r.should_fire_on_path("/"));
 
-        let r = Route::new("/test/<param1>/<param2>", handler.into_service().into())
-            .expect("valid route");
+        let r = Route::new(
+            "/test/<param1>/<param2>",
+            handler.into_service_with_state(()).into(),
+        )
+        .expect("valid route");
 
         assert!(r.should_fire_on_path("/test/1/2"));
         assert!(!r.should_fire_on_path("/test/test"));

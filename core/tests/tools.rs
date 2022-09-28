@@ -1,5 +1,5 @@
 use core::{
-    handler::{BoxCloneService, HandlerTrait},
+    handler::{BoxCloneService, HandlerTrait, Service},
     response::{body_to_bytes, Response},
     server::{Route, Server},
 };
@@ -11,14 +11,8 @@ struct Client {
 }
 
 impl Client {
-    fn new(
-        routes: HashMap<Method, Vec<Route>>,
-        states: Vec<StateContainer>,
-    ) -> anyhow::Result<Self> {
+    fn new(routes: HashMap<Method, Vec<Route>>) -> anyhow::Result<Self> {
         let mut server = Server::new_with_routes(routes);
-        for state in states {
-            // server = server.state(state)?;
-        }
         Ok(Self { server })
     }
 
@@ -26,8 +20,6 @@ impl Client {
         self.server.fire::<std::io::BufWriter<Vec<u8>>>(request)
     }
 }
-
-type StateContainer = Box<dyn Send + Sync + 'static>;
 
 pub struct TestCaseBuilder {
     name: Option<String>,
@@ -43,32 +35,27 @@ pub struct TestCaseBuilder {
     body: Option<Body>,
     headers: Option<HashMap<String, String>>,
     result: Option<Vec<u8>>,
-
-    states: Vec<StateContainer>,
 }
 
 impl TestCaseBuilder {
-    pub fn new<S, H, Q>(path: S, url: S, method: Method, handler: H) -> Self
+    pub fn new<T, V>(path: T, url: T, method: Method, service: V) -> Self
     where
-        Q: 'static,
-        S: ToString,
-        H: HandlerTrait<Q>,
+        T: ToString,
+        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
     {
         Self {
             name: None,
             path: path.to_string(),
             url: url.to_string(),
             method,
-            handler: BoxCloneService::from(handler.into_service()),
+            handler: BoxCloneService::new(service),
             headers: None,
             body: None,
             result: None,
-            // state: Arc::default(),
-            states: vec![],
         }
     }
 
-    pub fn name<S: ToString>(mut self, name: S) -> Self {
+    pub fn name<T: ToString>(mut self, name: T) -> Self {
         self.name = Some(name.to_string());
         self
     }
@@ -80,14 +67,6 @@ impl TestCaseBuilder {
 
     pub fn result(mut self, result: &str) -> Self {
         self.result = Some(result.as_bytes().to_vec());
-        self
-    }
-
-    pub fn state<S>(mut self, state: S) -> Self
-    where
-        S: Send + Sync + 'static,
-    {
-        self.states.push(Box::new(state));
         self
     }
 
@@ -112,7 +91,7 @@ impl TestCaseBuilder {
         let req = builder.body(self.body.unwrap_or_default())?;
 
         let route = Route::new(self.path, self.handler)?;
-        let client = Client::new(HashMap::from([(self.method, vec![route])]), self.states)?;
+        let client = Client::new(HashMap::from([(self.method, vec![route])]))?;
 
         let res: Response = client.send(req)?;
         let body_bytes: Vec<u8> = body_to_bytes(res.into_body())?.into();

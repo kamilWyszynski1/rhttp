@@ -11,16 +11,19 @@ use std::{collections::HashMap, str::FromStr};
 mod private {
     #[derive(Debug, Clone, Copy)]
     pub enum ViaRequest {}
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum ViaParts {}
 }
 
 /// Allows various types to be created from Request.
-pub trait FromRequest<B, M = private::ViaRequest>: Sized {
-    fn from_request(req: Request<B>) -> anyhow::Result<Self>;
+pub trait FromRequest<B, S, M = private::ViaRequest>: Sized {
+    fn from_request(req: Request<B>, state: &S) -> anyhow::Result<Self>;
 }
 
 /// Implement FromRequest for every variant of Request<B>.
-impl<B> FromRequest<B> for Request<B> {
-    fn from_request(req: Request<B>) -> anyhow::Result<Self> {
+impl<B, S> FromRequest<B, S> for Request<B> {
+    fn from_request(req: Request<B>, _state: &S) -> anyhow::Result<Self> {
         Ok(req)
     }
 }
@@ -32,8 +35,8 @@ impl<B> FromRequest<B> for Request<B> {
 /// ```rust
 /// fn handler(s: String) {}
 /// ```
-impl FromRequest<Body> for String {
-    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
+impl<S> FromRequest<Body, S> for String {
+    fn from_request(req: Request<Body>, _state: &S) -> anyhow::Result<Self> {
         let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
         let string = std::str::from_utf8(&bytes)?.to_owned();
 
@@ -59,11 +62,11 @@ impl FromRequest<Body> for String {
 /// ```
 pub struct Json<T>(pub T);
 
-impl<T> FromRequest<Body> for Json<T>
+impl<S, T> FromRequest<Body, S> for Json<T>
 where
     T: DeserializeOwned,
 {
-    fn from_request(req: Request<Body>) -> anyhow::Result<Self> {
+    fn from_request(req: Request<Body>, _state: &S) -> anyhow::Result<Self> {
         let bytes: Bytes = futures_executor::block_on(hyper::body::to_bytes(req.into_body()))?;
         let deserializer = &mut serde_json::Deserializer::from_slice(&bytes);
 
@@ -123,30 +126,30 @@ derive_header!(Host(_), name: HOST);
 /// Types that implements this trait can be created from request's parts.
 /// This trait shouldn't be used directly, rather than that use some of its
 /// implementations like TypedHeader or PathParam.
-pub trait FromRequestParts: Sized {
-    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self>;
+pub trait FromRequestParts<S>: Sized {
+    fn from_request_parts(parts: &mut Parts, state: &S) -> anyhow::Result<Self>;
 }
 
-/// Implement FromRequestParts for every type that implements TypedHeader trait.  
-impl<T> FromRequestParts for T
+/// Implement FromRequestParts<S> for every type that implements TypedHeader trait.  
+impl<S, T> FromRequestParts<S> for T
 where
     T: TypedHeader,
 {
-    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+    fn from_request_parts(parts: &mut Parts, _state: &S) -> anyhow::Result<Self> {
         T::try_from_header_map(&parts.headers)
     }
 }
 
-/// Implements FromRequest for every type that implements FromRequestParts trait.
+/// Implements FromRequest for every type that implements FromRequestParts<S> trait.
 /// This implementation allows to use ContentType, Host, etc. structs as parameters
 /// in server's handlers.
-impl<T, B> FromRequest<B> for T
+impl<S, T, B> FromRequest<B, S, private::ViaParts> for T
 where
-    T: FromRequestParts,
+    T: FromRequestParts<S>,
 {
-    fn from_request(req: Request<B>) -> anyhow::Result<Self> {
+    fn from_request(req: Request<B>, state: &S) -> anyhow::Result<Self> {
         let (mut b, _) = req.into_parts();
-        T::from_request_parts(&mut b)
+        T::from_request_parts(&mut b, state)
     }
 }
 
@@ -174,13 +177,13 @@ impl PathParamOrdering {
 /// ```
 pub struct PathParam<T>(pub T);
 
-impl<T> FromRequestParts for PathParam<T>
+impl<S, T> FromRequestParts<S> for PathParam<T>
 where
     T: 'static,
     T: FromStr,
     <T as FromStr>::Err: std::error::Error + Sync + Send,
 {
-    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+    fn from_request_parts(parts: &mut Parts, _state: &S) -> anyhow::Result<Self> {
         let path = parts.uri.to_string();
 
         let segments = parts
@@ -238,11 +241,11 @@ where
 /// ```
 pub struct Query<T>(pub T);
 
-impl<T> FromRequestParts for Query<T>
+impl<S, T> FromRequestParts<S> for Query<T>
 where
     T: DeserializeOwned,
 {
-    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+    fn from_request_parts(parts: &mut Parts, _state: &S) -> anyhow::Result<Self> {
         Ok(Query(serde_urlencoded::from_str(
             parts.uri.query().context("not queries provided")?,
         )?))
@@ -250,14 +253,25 @@ where
 }
 
 /// Implement this trait for [`hyper::HeaderMap`] in order to use it directly in handler.
-/// 
+///
 /// ```rust
 /// use hyper::HeaderMap;
-/// 
+///
 /// fn handler(headers: HeaderMap) {}
 /// ```
-impl FromRequestParts for HeaderMap {
-    fn from_request_parts(parts: &mut Parts) -> anyhow::Result<Self> {
+impl<S> FromRequestParts<S> for HeaderMap {
+    fn from_request_parts(parts: &mut Parts, _state: &S) -> anyhow::Result<Self> {
         Ok(parts.headers.clone())
+    }
+}
+
+pub struct State<T>(pub T);
+
+impl<S> FromRequestParts<S> for State<S>
+where
+    S: Clone,
+{
+    fn from_request_parts(_parts: &mut Parts, state: &S) -> anyhow::Result<Self> {
+        Ok(State(state.clone()))
     }
 }
