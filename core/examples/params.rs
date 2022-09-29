@@ -1,3 +1,4 @@
+use core::handler::HandlerTraitWithoutState;
 use core::request::ContentType;
 use core::request::Json;
 use core::server::Server;
@@ -13,36 +14,28 @@ struct OwnBody {
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    fn handler() {
-        dbg!("handler");
-        // let param_value = req.query::<String>("param1")?;
-        // Ok(param_value)
-    }
+    fn handler() {}
 
     fn handler3(_req: Request<Body>) -> anyhow::Result<String> {
-        dbg!("handler3");
         Ok("own_param.0.".into())
     }
 
     fn handler4(body: String) -> anyhow::Result<String> {
-        dbg!("handler3");
         Ok(body)
     }
 
-    fn handler5(Json(own_body): Json<OwnBody>) {
-        dbg!(own_body);
-    }
+    fn handler5(Json(own_body): Json<OwnBody>) {}
 
     fn handler_header(ContentType(content_type): ContentType) -> anyhow::Result<String> {
         Ok(content_type)
     }
 
     Server::new("127.0.0.1", 8080)
-        .get("/test/<param1>", handler)
-        // .get("/", handler2)
-        .get("/dupa/<param>", handler3)
-        .get("/", handler4)
-        .get("/json", handler5)
-        .get("/header", handler_header)
+        .get("/test/<param1>", handler.into_service())
+        .get("/dupa/<param>", handler3.into_service())
+        .get("/", handler4.into_service())
+        .get("/json", handler5.into_service())
+        .get("/header", handler_header.into_service())
+        .post("/body", handler5.into_service())
         .run()
 }

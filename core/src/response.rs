@@ -16,9 +16,7 @@ pub fn response_to_bytes(response: Response) -> anyhow::Result<Vec<u8>> {
     use std::fmt::Write as _; // import without risk of name clashing
 
     let mut buffer = BytesMut::with_capacity(1024 * 8); // 8kB
-
     let status = response.status();
-
     let (status_code, status_message) = (status.as_u16(), status.as_str());
 
     let _ = write!(
@@ -38,7 +36,6 @@ pub fn response_to_bytes(response: Response) -> anyhow::Result<Vec<u8>> {
     }
 
     let body_bytes = body_to_bytes(response.into_body())?;
-
     if body_bytes.is_empty() {
         return Ok(buffer.to_vec());
     }
@@ -54,10 +51,11 @@ pub fn response_to_bytes(response: Response) -> anyhow::Result<Vec<u8>> {
 /// ```rust
 /// use core::server::Server;
 /// use hyper::Request;
+/// use crate::core::handler::HandlerTraitWithoutState;
 ///
 /// fn handler() {}
 ///
-/// Server::new("127.0.0.1", 8080).get("/", handler);
+/// Server::new("127.0.0.1", 8080).get("/", handler.into_service());
 /// ```
 impl Responder for () {
     fn into_response(self) -> anyhow::Result<Response> {
@@ -77,12 +75,13 @@ impl Responder for Response {
 /// ```rust
 /// use core::server::Server;
 /// use hyper::Request;
+/// use crate::core::handler::HandlerTraitWithoutState;
 ///
 /// fn handler() -> &'static str {
 ///     "hello"
 /// }
 ///
-/// Server::new("127.0.0.1", 8080).get("/", handler);
+/// Server::new("127.0.0.1", 8080).get("/", handler.into_service());
 ///
 /// ```
 impl<'a> Responder for &'a str {
@@ -96,12 +95,13 @@ impl<'a> Responder for &'a str {
 /// ```rust
 /// use core::server::Server;
 /// use hyper::Request;
+/// use crate::core::handler::HandlerTraitWithoutState;
 ///
 /// fn handler() -> String {
 ///     "hello".into()
 /// }
 ///
-/// Server::new("127.0.0.1", 8080).get("/", handler);
+/// Server::new("127.0.0.1", 8080).get("/", handler.into_service());
 /// ```
 impl Responder for String {
     fn into_response(self) -> anyhow::Result<Response> {

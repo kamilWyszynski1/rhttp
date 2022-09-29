@@ -61,6 +61,24 @@ pub trait HandlerTrait<Q, S = (), B = Body>: Sized + Send + Sync + 'static {
     }
 }
 
+/// Helper trait for implementing handler that does not use state.
+pub trait HandlerTraitWithoutState<Q, B>: HandlerTrait<Q, (), B> {
+    fn into_service(self) -> IntoService<Self, (), Q, B>;
+}
+
+impl<Q, B, H> HandlerTraitWithoutState<Q, B> for H
+where
+    H: HandlerTrait<Q, (), B>,
+{
+    fn into_service(self) -> IntoService<Self, (), Q, B> {
+        IntoService {
+            handler: self,
+            state: Arc::new(()),
+            _marker: PhantomData,
+        }
+    }
+}
+
 macro_rules! implement_handler_trait {
     ([$($ty:ident),*], $last:ident) => {
         #[allow(non_snake_case, unused_mut)]

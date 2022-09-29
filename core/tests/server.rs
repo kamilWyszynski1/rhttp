@@ -1,4 +1,4 @@
-use core::handler::HandlerTrait;
+use core::handler::{HandlerTrait, HandlerTraitWithoutState};
 use core::request::{ContentType, Host, Json, PathParam, Query, State};
 use core::response::{Responder, Response};
 use core::server::Route;
@@ -13,24 +13,20 @@ mod tools;
 fn test_should_fire_on_path() {
     fn handler() {}
 
-    let r = Route::new("/test", handler.into_service_with_state(()).into()).expect("valid route");
+    let r = Route::new("/test", handler.into_service().into()).expect("valid route");
 
     assert!(r.should_fire_on_path("/test"));
     assert!(!r.should_fire_on_path("/test/test"));
     assert!(!r.should_fire_on_path("/"));
 
-    let r = Route::new("/test/<param1>", handler.into_service_with_state(()).into())
-        .expect("valid route");
+    let r = Route::new("/test/<param1>", handler.into_service().into()).expect("valid route");
 
     assert!(!r.should_fire_on_path("/test"));
     assert!(r.should_fire_on_path("/test/test"));
     assert!(!r.should_fire_on_path("/"));
 
-    let r = Route::new(
-        "/test/<param1>/<param2>",
-        handler.into_service_with_state(()).into(),
-    )
-    .expect("valid route");
+    let r =
+        Route::new("/test/<param1>/<param2>", handler.into_service().into()).expect("valid route");
 
     assert!(r.should_fire_on_path("/test/1/2"));
     assert!(!r.should_fire_on_path("/test/test"));
@@ -84,62 +80,47 @@ fn test_with_client() -> anyhow::Result<()> {
         user
     }
 
-    TestCaseBuilder::new("/", "/", Method::GET, empty.into_service_with_state(()))
+    TestCaseBuilder::new("/", "/", Method::GET, empty.into_service())
         .name("empty")
         .run()?;
 
-    TestCaseBuilder::new("/str", "/str", Method::GET, str.into_service_with_state(()))
+    TestCaseBuilder::new("/str", "/str", Method::GET, str.into_service())
         .name("str")
         .result("hello")
         .run()?;
 
-    TestCaseBuilder::new(
-        "/string",
-        "/string",
-        Method::GET,
-        string.into_service_with_state(()),
-    )
-    .name("string")
-    .result("hello")
-    .run()?;
+    TestCaseBuilder::new("/string", "/string", Method::GET, string.into_service())
+        .name("string")
+        .result("hello")
+        .run()?;
 
-    TestCaseBuilder::new(
-        "/result",
-        "/result",
-        Method::GET,
-        result.into_service_with_state(()),
-    )
-    .name("result")
-    .result("ok")
-    .run()?;
+    TestCaseBuilder::new("/result", "/result", Method::GET, result.into_service())
+        .name("result")
+        .result("ok")
+        .run()?;
 
     TestCaseBuilder::new(
         "/content-type",
         "/content-type",
         Method::GET,
-        content_type_handler.into_service_with_state(()),
+        content_type_handler.into_service(),
     )
     .name("content-type")
     .header(hyper::header::CONTENT_TYPE, "application/json")
     .result("application/json")
     .run()?;
 
-    TestCaseBuilder::new(
-        "/host",
-        "/host",
-        Method::GET,
-        host_handler.into_service_with_state(()),
-    )
-    .name("host")
-    .header(hyper::header::HOST, "localhost")
-    .result("localhost")
-    .run()?;
+    TestCaseBuilder::new("/host", "/host", Method::GET, host_handler.into_service())
+        .name("host")
+        .header(hyper::header::HOST, "localhost")
+        .result("localhost")
+        .run()?;
 
     TestCaseBuilder::new(
         "/param/<user>",
         "/param/test-user",
         Method::GET,
-        param_handler.into_service_with_state(()),
+        param_handler.into_service(),
     )
     .name("param")
     .result("test-user")
@@ -149,7 +130,7 @@ fn test_with_client() -> anyhow::Result<()> {
         "/body",
         "/body",
         Method::POST,
-        body_handler_json.into_service_with_state(()),
+        body_handler_json.into_service(),
     )
     .name("body")
     .body(Body::from(
@@ -175,7 +156,7 @@ fn test_with_client_2_param_handlers() -> anyhow::Result<()> {
         "/body/<user>",
         "/body/username",
         Method::POST,
-        handler.into_service_with_state(()),
+        handler.into_service(),
     )
     .name("handler with path param and body")
     .body(Body::from(body))
@@ -204,7 +185,7 @@ fn test_with_client_3_param_handlers() -> anyhow::Result<()> {
         "/body/<user>/<id>",
         "/body/username/100",
         Method::POST,
-        handler.into_service_with_state(()),
+        handler.into_service(),
     )
     .name("handler with path param and body")
     .body(Body::from(body))
@@ -232,7 +213,7 @@ fn handler_query() -> anyhow::Result<()> {
         "/query",
         "/query?val=value&name=john&age=123",
         Method::POST,
-        handler.into_service_with_state(()),
+        handler.into_service(),
     )
     .name("handler with path param and body")
     .result(body)
@@ -270,6 +251,56 @@ fn test_state() -> anyhow::Result<()> {
     )
     .name("handler with path param and body")
     .result(body)
+    .run()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_state_with_extractors() -> anyhow::Result<()> {
+    #[derive(Default, Clone, Serialize)]
+    struct Config {
+        port: i32,
+        debug: bool,
+        db_host: String,
+        db_password: String,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct QueryParams {
+        val: String,
+        name: String,
+        age: i32,
+    }
+
+    fn handler(
+        state: State<Config>,
+        Query(params): Query<QueryParams>,
+        Json(mut body): Json<OwnBody>,
+    ) -> anyhow::Result<String> {
+        body.val = state.0.db_host;
+        body.val2 = params.age;
+        Ok(serde_json::to_string(&body)?)
+    }
+
+    let cfg = Config {
+        port: 8080,
+        debug: true,
+        db_host: "localhost".into(),
+        db_password: "1qazxsw2".into(),
+    };
+
+    let body = r#"{"val":"string value","val2":123,"val3":true}"#;
+    let changed_body = r#"{"val":"localhost","val2":123,"val3":true}"#;
+    TestCaseBuilder::new(
+        "/query",
+        "/query?val=value&name=john&age=123",
+        Method::POST,
+        handler.into_service_with_state(cfg),
+    )
+    .name("test_state_with_extractors")
+    .body(Body::from(body))
+    .result(changed_body)
     .run()?;
 
     Ok(())

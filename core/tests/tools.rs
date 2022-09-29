@@ -1,5 +1,5 @@
 use core::{
-    handler::{BoxCloneService, HandlerTrait, Service},
+    handler::{BoxCloneService, Service},
     response::{body_to_bytes, Response},
     server::{Route, Server},
 };
@@ -12,8 +12,9 @@ struct Client {
 
 impl Client {
     fn new(routes: HashMap<Method, Vec<Route>>) -> anyhow::Result<Self> {
-        let mut server = Server::new_with_routes(routes);
-        Ok(Self { server })
+        Ok(Self {
+            server: Server::new_with_routes(routes),
+        })
     }
 
     fn send(&self, request: Request<Body>) -> anyhow::Result<Response> {

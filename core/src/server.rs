@@ -1,5 +1,5 @@
 use crate::{
-    handler::{BoxCloneService, HandlerTrait, Service},
+    handler::{BoxCloneService, Service},
     middleware::Middleware,
     response::{response_to_bytes, Response},
 };
@@ -215,7 +215,7 @@ impl Server {
     }
 
     /// Registers GET route.
-    pub fn get<P, V, T, U>(mut self, path: P, service: V) -> Self
+    pub fn get<P, V>(mut self, path: P, service: V) -> Self
     where
         P: Into<String>,
         V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
@@ -228,7 +228,7 @@ impl Server {
     }
 
     /// Registers POST route.
-    pub fn post<P, V, T, U>(mut self, path: P, service: V) -> Self
+    pub fn post<P, V>(mut self, path: P, service: V) -> Self
     where
         P: Into<String>,
         V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
@@ -240,42 +240,40 @@ impl Server {
         self
     }
 
-    ///// Registers PUT route.
-    // pub fn put<Q, P, H, S>(mut self, path: P, handler: H) -> Self
-    // where
-    //     Q: 'static,
-    //     P: Into<String>,
-    //     H: HandlerTrait<Q, S>,
-    // {
-    //     self.routes.entry(Method::PUT).or_default().push(
-    //         Route::new(path, BoxCloneService::new(handler.into_service_with_state(())))
-    //             .expect("tried to register invalid PUT route"),
-    //     );
-    //     self
-    // }
+    /// Registers PUT route.
+    pub fn put<P, V>(mut self, path: P, service: V) -> Self
+    where
+        P: Into<String>,
+        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
+    {
+        self.routes.entry(Method::PUT).or_default().push(
+            Route::new(path, BoxCloneService::new(service))
+                .expect("tried to register invalid PUT route"),
+        );
+        self
+    }
 
-    // /// Registers DELETE route.
-    // pub fn delete<Q, P, H, S>(mut self, path: P, handler: H) -> Self
-    // where
-    //     Q: 'static,
-    //     P: Into<String>,
-    //     H: HandlerTrait<Q, S>,
-    // {
-    //     self.routes.entry(Method::DELETE).or_default().push(
-    //         Route::new(path, BoxCloneService::new(handler.into_service_with_state(())))
-    //             .expect("tried to register invalid DELETE route"),
-    //     );
-    //     self
-    // }
+    /// Registers DELETE route.
+    pub fn delete<P, V>(mut self, path: P, service: V) -> Self
+    where
+        P: Into<String>,
+        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
+    {
+        self.routes.entry(Method::DELETE).or_default().push(
+            Route::new(path, BoxCloneService::new(service))
+                .expect("tried to register invalid DELETE route"),
+        );
+        self
+    }
 
-    // /// Registers new middleware.
-    // pub fn middleware<M>(mut self, m: M) -> Self
-    // where
-    //     M: Middleware + 'static,
-    // {
-    //     self.middlewares.push(Box::new(m));
-    //     self
-    // }
+    /// Registers new middleware.
+    pub fn middleware<M>(mut self, m: M) -> Self
+    where
+        M: Middleware + 'static,
+    {
+        self.middlewares.push(Box::new(m));
+        self
+    }
 }
 
 const MESSAGE_SIZE: usize = 1024;
@@ -323,12 +321,10 @@ fn httparse_req_to_hyper_request(
     Ok(builder.body(Body::from(body))?)
 }
 
-// #[cfg(test)]
+#[cfg(test)]
 mod tests {
-    use crate::{
-        handler::BoxCloneService,
-        server::{HandlerTrait, Route},
-    };
+    use crate::handler::HandlerTrait;
+    use crate::{handler::BoxCloneService, server::Route};
 
     #[test]
     fn test_should_fire_on_path() {
