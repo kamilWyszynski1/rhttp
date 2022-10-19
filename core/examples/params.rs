@@ -1,6 +1,8 @@
+use anyhow::Context;
 use core::handler::HandlerTraitWithoutState;
 use core::request::ContentType;
 use core::request::Json;
+use core::response::Responder;
 use core::server::Server;
 use hyper::Body;
 use hyper::Request;
@@ -9,6 +11,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, Serialize)]
 struct OwnBody {
     val: String,
+}
+
+impl Responder for OwnBody {
+    fn into_response(self) -> anyhow::Result<core::response::Response> {
+        serde_json::to_string(&self)
+            .context("could not serialize to string")?
+            .into_response()
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -24,7 +34,9 @@ fn main() -> anyhow::Result<()> {
         Ok(body)
     }
 
-    fn handler5(Json(own_body): Json<OwnBody>) {}
+    fn handler5(Json(own_body): Json<OwnBody>) -> OwnBody {
+        own_body
+    }
 
     fn handler_header(ContentType(content_type): ContentType) -> anyhow::Result<String> {
         Ok(content_type)
@@ -37,5 +49,6 @@ fn main() -> anyhow::Result<()> {
         .get("/json", handler5.into_service())
         .get("/header", handler_header.into_service())
         .post("/body", handler5.into_service())
+        .get("/closure", handler.into_service())
         .run()
 }

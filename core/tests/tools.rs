@@ -1,7 +1,8 @@
 use core::{
     handler::{BoxCloneService, Service},
     response::{body_to_bytes, Response},
-    server::{Route, Server},
+    route::{Route, RouteGroup},
+    server::Server,
 };
 use hyper::{Body, Method, Request};
 use std::collections::HashMap;
@@ -15,6 +16,11 @@ impl Client {
         Ok(Self {
             server: Server::new_with_routes(routes),
         })
+    }
+
+    fn groups(mut self, groups: Vec<RouteGroup>) -> Self {
+        self.server = self.server.groups(groups);
+        self
     }
 
     fn send(&self, request: Request<Body>) -> anyhow::Result<Response> {
@@ -32,6 +38,7 @@ pub struct TestCaseBuilder {
     url: String,
     method: Method,
     handler: BoxCloneService<Request<Body>, Response>,
+    groups: Option<Vec<RouteGroup>>,
 
     body: Option<Body>,
     headers: Option<HashMap<String, String>>,
@@ -50,6 +57,7 @@ impl TestCaseBuilder {
             url: url.to_string(),
             method,
             handler: BoxCloneService::new(service),
+            groups: None,
             headers: None,
             body: None,
             result: None,
@@ -82,6 +90,11 @@ impl TestCaseBuilder {
         self
     }
 
+    pub fn groups(mut self, groups: Vec<RouteGroup>) -> Self {
+        self.groups = Some(groups);
+        self
+    }
+
     pub fn run(self) -> anyhow::Result<()> {
         let mut builder = Request::builder().uri(self.url).method(self.method.clone());
 
@@ -92,7 +105,8 @@ impl TestCaseBuilder {
         let req = builder.body(self.body.unwrap_or_default())?;
 
         let route = Route::new(self.path, self.handler)?;
-        let client = Client::new(HashMap::from([(self.method, vec![route])]))?;
+        let client: Client = Client::new(HashMap::from([(self.method, vec![route])]))?
+            .groups(self.groups.unwrap_or_default());
 
         let res: Response = client.send(req)?;
         let body_bytes: Vec<u8> = body_to_bytes(res.into_body())?.into();

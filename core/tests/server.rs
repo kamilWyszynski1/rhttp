@@ -1,13 +1,16 @@
+use anyhow::Ok;
 use core::handler::{HandlerTrait, HandlerTraitWithoutState};
 use core::request::{ContentType, Host, Json, PathParam, Query, State};
 use core::response::{Responder, Response};
-use core::server::Route;
+use core::route::{Route, RouteGroup};
 use hyper::Body;
 use hyper::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use tools::TestCaseBuilder;
 
 mod tools;
+
+fn empty_handler() {}
 
 #[test]
 fn test_should_fire_on_path() {
@@ -302,6 +305,83 @@ fn test_state_with_extractors() -> anyhow::Result<()> {
     .body(Body::from(body))
     .result(changed_body)
     .run()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_route_group() -> anyhow::Result<()> {
+    let v1 = RouteGroup::new("/v1")
+        .get("/user", (|| "v1").into_service())
+        .get("/user2", (|| "v3").into_service());
+    let v2 = RouteGroup::new("/v2")
+        .get("/user", (|| "v2").into_service())
+        .get("/user2", (|| "v4").into_service());
+
+    let groups = vec![v1, v2];
+    TestCaseBuilder::new("/", "/v1/user", Method::GET, empty_handler.into_service())
+        .groups(groups.clone())
+        .name("test_route_group")
+        .result("v1")
+        .run()?;
+    TestCaseBuilder::new("/", "/v1/user2", Method::GET, empty_handler.into_service())
+        .groups(groups.clone())
+        .name("test_route_group")
+        .result("v3")
+        .run()?;
+
+    TestCaseBuilder::new("/", "/v2/user", Method::GET, empty_handler.into_service())
+        .groups(groups.clone())
+        .name("test_route_group")
+        .result("v2")
+        .run()?;
+    TestCaseBuilder::new("/", "/v2/user2", Method::GET, empty_handler.into_service())
+        .groups(groups)
+        .name("test_route_group")
+        .result("v4")
+        .run()?;
+    Ok(())
+}
+
+#[test]
+fn test_route_group_with_state() -> anyhow::Result<()> {
+    fn handler(state: State<i32>) -> i32 {
+        state.0
+    }
+
+    fn handler2(state: State<bool>) -> bool {
+        state.0
+    }
+
+    let v1 = RouteGroup::new("/v1")
+        .get("/user", handler.into_service_with_state(123))
+        .get("/user2", handler2.into_service_with_state(true));
+    let v2 = RouteGroup::new("/v2")
+        .get("/user", handler.into_service_with_state(111))
+        .get("/user2", handler2.into_service_with_state(false));
+
+    let groups = vec![v1, v2];
+    TestCaseBuilder::new("/", "/v1/user", Method::GET, empty_handler.into_service())
+        .groups(groups.clone())
+        .name("test_route_group")
+        .result("123")
+        .run()?;
+    TestCaseBuilder::new("/", "/v1/user2", Method::GET, empty_handler.into_service())
+        .groups(groups.clone())
+        .name("test_route_group")
+        .result("true")
+        .run()?;
+
+    TestCaseBuilder::new("/", "/v2/user", Method::GET, empty_handler.into_service())
+        .groups(groups.clone())
+        .name("test_route_group")
+        .result("111")
+        .run()?;
+    TestCaseBuilder::new("/", "/v2/user2", Method::GET, empty_handler.into_service())
+        .groups(groups)
+        .name("test_route_group")
+        .result("false")
+        .run()?;
 
     Ok(())
 }

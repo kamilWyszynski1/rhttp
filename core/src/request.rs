@@ -167,7 +167,7 @@ impl PathParamOrdering {
 /// If inner type implements FromStr trait this container can be used
 /// in handler to get direct access for query param value.
 ///
-/// ```rust
+/// ```
 /// use core::request::PathParam;
 /// use core::server::Server;
 /// use crate::core::handler::HandlerTraitWithoutState;

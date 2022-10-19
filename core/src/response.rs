@@ -109,6 +109,18 @@ impl Responder for String {
     }
 }
 
+impl Responder for i32 {
+    fn into_response(self) -> anyhow::Result<Response> {
+        self.to_string().into_response()
+    }
+}
+
+impl Responder for bool {
+    fn into_response(self) -> anyhow::Result<Response> {
+        self.to_string().into_response()
+    }
+}
+
 impl<T> Responder for anyhow::Result<T>
 where
     T: Responder,
