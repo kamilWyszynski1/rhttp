@@ -1,14 +1,11 @@
 use crate::{
-    handler::{BoxCloneService, Service},
-    middleware::Middleware,
+    handler::Service,
     response::{response_to_bytes, Response},
-    route::{Route, RouteGroup},
 };
-use anyhow::{Context, Ok};
-use hyper::{Body, Method, Request};
+use anyhow::Ok;
+use hyper::{Body, Request};
 use log::error;
 use std::{
-    collections::HashMap,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::Arc,
@@ -16,34 +13,28 @@ use std::{
 };
 
 #[derive(Default)]
-pub struct Server {
+pub struct Server<V> {
     host: String,
     port: u32,
 
-    /// Registered routes.
-    routes: HashMap<Method, Vec<Route>>,
-
-    /// Registered middlewares that will be run during request handling.
-    /// These are global middlewares, note that each route can have
-    /// its own middleware so we can have different behaviors based on route.
-    middlewares: Vec<Box<dyn Middleware>>,
+    service: Option<V>,
 }
 
-impl Server {
+impl<V> Server<V>
+where
+    V: Service<Request<Body>> + Send + Sync + 'static,
+{
     pub fn new(host: impl Into<String>, port: u32) -> Self {
         Self {
             host: host.into(),
             port,
-            ..Default::default()
+            service: None,
         }
     }
 
-    /// Creates new server with given routes. Should be used only internally for testing.
-    pub fn new_with_routes(routes: HashMap<Method, Vec<Route>>) -> Self {
-        Self {
-            routes,
-            ..Default::default()
-        }
+    pub fn with_service(mut self, service: V) -> Self {
+        self.service = Some(service);
+        self
     }
 
     /// Starts server,
@@ -76,116 +67,11 @@ impl Server {
 
     /// Method that runs whole server's logic. Takes Write trait
     /// implementation in order to mock it during testing.
-    pub fn fire<W>(&self, mut request: Request<Body>) -> anyhow::Result<Response>
+    pub fn fire<W>(&self, request: Request<Body>) -> anyhow::Result<Response>
     where
         W: std::io::Write,
     {
-        let route = self
-            .routes
-            .get(request.method())
-            .with_context(|| format!("not registered routes for {:?} method", request.method()))?
-            .iter()
-            .find(|route| route.should_fire_on_path(request.uri().path()))
-            .context("no matching route")?;
-
-        for m in &self.middlewares {
-            m.on_request(&mut request)?;
-        }
-
-        let extensions = request.extensions_mut();
-        extensions.insert(route.metadata.param_segments.clone());
-
-        let mut response = route.fire(request)?;
-
-        for m in &self.middlewares {
-            m.on_response(&mut response)?;
-        }
-
-        Ok(response)
-    }
-
-    /// Registers GET route.
-    pub fn get<P, V>(mut self, path: P, service: V) -> Self
-    where
-        P: Into<String>,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
-    {
-        self.routes.entry(Method::GET).or_default().push(
-            Route::new(path, BoxCloneService::new(service))
-                .expect("tried to register invalid GET route"),
-        );
-        self
-    }
-
-    /// Registers POST route.
-    pub fn post<P, V>(mut self, path: P, service: V) -> Self
-    where
-        P: Into<String>,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
-    {
-        self.routes.entry(Method::POST).or_default().push(
-            Route::new(path, BoxCloneService::new(service))
-                .expect("tried to register invalid POST route"),
-        );
-        self
-    }
-
-    /// Registers PUT route.
-    pub fn put<P, V>(mut self, path: P, service: V) -> Self
-    where
-        P: Into<String>,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
-    {
-        self.routes.entry(Method::PUT).or_default().push(
-            Route::new(path, BoxCloneService::new(service))
-                .expect("tried to register invalid PUT route"),
-        );
-        self
-    }
-
-    /// Registers DELETE route.
-    pub fn delete<P, V>(mut self, path: P, service: V) -> Self
-    where
-        P: Into<String>,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
-    {
-        self.routes.entry(Method::DELETE).or_default().push(
-            Route::new(path, BoxCloneService::new(service))
-                .expect("tried to register invalid DELETE route"),
-        );
-        self
-    }
-
-    /// Registers new middleware.
-    pub fn middleware<M>(mut self, m: M) -> Self
-    where
-        M: Middleware + 'static,
-    {
-        self.middlewares.push(Box::new(m));
-        self
-    }
-
-    /// Takes vector of `route::RouteGroup` and adds them to already registerd routes.
-    ///
-    /// ```
-    /// use core::route::RouteGroup;
-    /// use core::server::Server;
-    /// use crate::core::handler::HandlerTraitWithoutState;
-    ///
-    /// let v1 = RouteGroup::new("/v1").get("/user", (|| "v1").into_service());
-    /// let v2 = RouteGroup::new("/v2").get("/user", (|| "v2").into_service());
-    ///
-    /// Server::new("", 8080).groups(vec![v1, v2]).run();
-    /// ```
-    pub fn groups(mut self, groups: Vec<RouteGroup>) -> Self {
-        groups.into_iter().for_each(|rg| {
-            for (method, rs) in rg.routes() {
-                for r in rs {
-                    self.routes.entry(method.clone()).or_default().push(r);
-                }
-            }
-        });
-        self
+        Ok(self.service.as_ref().unwrap().call(request))
     }
 }
 
@@ -236,8 +122,9 @@ fn httparse_req_to_hyper_request(
 
 #[cfg(test)]
 mod tests {
+    use crate::handler::BoxCloneService;
     use crate::handler::HandlerTrait;
-    use crate::{handler::BoxCloneService, server::Route};
+    use crate::route::Route;
 
     #[test]
     fn test_should_fire_on_path() {

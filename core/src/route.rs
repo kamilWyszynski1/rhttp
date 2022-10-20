@@ -1,23 +1,137 @@
 use crate::{
-    handler::{BoxCloneService, Service},
+    handler::{BoxCloneService, HandlerTrait, IntoService, Service},
     middleware::Middleware,
-    response::Response,
+    response::{self, Response},
 };
-use anyhow::bail;
+use anyhow::{bail, Context};
 use hyper::{Body, Method, Request};
 use std::{collections::HashMap, sync::Arc};
+
+/// Main entity that delegates all routing in an application.
+pub struct Router<S> {
+    state: Arc<S>,
+    routes: HashMap<Method, Vec<Route>>,
+
+    /// Registered middlewares that will be run during request handling.
+    /// These are global middlewares, note that each route can have
+    /// its own middleware so we can have different behaviors based on route.
+    middlewares: Vec<Box<dyn Middleware>>,
+}
+
+impl Router<()> {
+    pub fn new() -> Self {
+        Self::with_state(())
+    }
+}
+
+impl<S> Router<S> {
+    fn call(&self, mut request: Request<Body>) -> anyhow::Result<Response> {
+        let route = self
+            .routes
+            .get(request.method())
+            .with_context(|| format!("not registered routes for {:?} method", request.method()))?
+            .iter()
+            .find(|route| route.should_fire_on_path(request.uri().path()))
+            .context("no matching route")?;
+
+        let extensions = request.extensions_mut();
+        extensions.insert(route.metadata.param_segments.clone());
+
+        let response = route.fire(request)?;
+
+        Ok(response)
+    }
+}
+
+impl<S> Router<S>
+where
+    S: Send + Sync + 'static,
+{
+    /// Creates new Router with given state. For that point we can only add handlers with coresponding state.
+    ///
+    /// ```
+    /// use core::route::Router;
+    /// use core::request::State;
+    ///
+    /// fn handler(state: State<i32>) {}
+    ///
+    /// let app = Router::with_state(100).get("/", handler);
+    /// ```
+    pub fn with_state(state: S) -> Self {
+        Self {
+            state: Arc::new(state),
+            routes: HashMap::new(),
+            middlewares: vec![],
+        }
+    }
+
+    fn register_path<P, H, Q: 'static>(mut self, method: Method, path: P, handler: H) -> Self
+    where
+        P: ToString,
+        H: HandlerTrait<Q, S>,
+    {
+        self.routes.entry(method).or_default().push(
+            Route::new(
+                path.to_string(),
+                BoxCloneService::new(handler.into_service_with_state_arc(self.state.clone())),
+            )
+            .expect("tried to register invalid GET route"),
+        );
+        self
+    }
+
+    pub fn get<P, H, Q: 'static>(self, path: P, handler: H) -> Self
+    where
+        P: ToString,
+        H: HandlerTrait<Q, S>,
+    {
+        self.register_path(Method::GET, path, handler)
+    }
+
+    pub fn post<P, H, Q: 'static>(self, path: P, handler: H) -> Self
+    where
+        P: ToString,
+        H: HandlerTrait<Q, S>,
+    {
+        self.register_path(Method::POST, path, handler)
+    }
+
+    /// Takes vector of `route::RouteGroup` and adds them to already registerd routes.
+    pub fn groups(mut self, groups: Vec<RouteGroup>) -> Self {
+        groups.into_iter().for_each(|rg| {
+            for (method, rs) in rg.routes() {
+                for r in rs {
+                    self.routes.entry(method.clone()).or_default().push(r);
+                }
+            }
+        });
+        self
+    }
+}
+
+impl<S> Service<Request<Body>> for Router<S> {
+    fn call(&self, req: Request<Body>) -> Response {
+        match self.call(req) {
+            Ok(response) => response,
+            Err(err) => hyper::Response::builder()
+                .status(hyper::StatusCode::INTERNAL_SERVER_ERROR)
+                .body(hyper::Body::from(err.to_string()))
+                .unwrap(),
+        }
+    }
+}
 
 /// RouteGroup enables grouping endpoints with common prefix path.
 ///
 /// ```
 /// use core::route::RouteGroup;
-/// use core::server::Server;
+/// use core::route::Router;
 /// use crate::core::handler::HandlerTraitWithoutState;
 ///
 /// let v1 = RouteGroup::new("/v1").get("/user", (|| "v1").into_service());
 /// let v2 = RouteGroup::new("/v2").get("/user", (|| "v2").into_service());
 ///
-/// Server::new("", 8080).groups(vec![v1, v2]).run();
+/// Router::new().groups(vec![v1, v2]);
 /// ```
 #[derive(Clone)]
 pub struct RouteGroup {
@@ -61,7 +175,7 @@ impl RouteGroup {
     pub fn get<P, V>(mut self, path: P, service: V) -> Self
     where
         P: ToString,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
+        V: Service<Request<Body>> + Send + Sync + 'static,
     {
         let path = self.construct_path(path);
 
@@ -76,7 +190,7 @@ impl RouteGroup {
     pub fn post<P, V>(mut self, path: P, service: V) -> Self
     where
         P: ToString,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
+        V: Service<Request<Body>> + Send + Sync + 'static,
     {
         let path = self.construct_path(path);
 
@@ -91,7 +205,7 @@ impl RouteGroup {
     pub fn put<P, V>(mut self, path: P, service: V) -> Self
     where
         P: ToString,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
+        V: Service<Request<Body>> + Send + Sync + 'static,
     {
         let path = self.construct_path(path);
 
@@ -106,7 +220,7 @@ impl RouteGroup {
     pub fn delete<P, V>(mut self, path: P, service: V) -> Self
     where
         P: ToString,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
+        V: Service<Request<Body>> + Send + Sync + 'static,
     {
         let path = self.construct_path(path);
 
@@ -134,7 +248,7 @@ impl RouteGroup {
 /// routes using `core::route::RouteGroup` and `core::server::Server::merge_routes` method.
 #[derive(Clone)]
 pub struct Route {
-    pub service: Arc<BoxCloneService<Request<Body>, Response>>,
+    pub service: Arc<BoxCloneService<Request<Body>>>,
 
     /// Contains metadata about registered route.
     pub metadata: RouteMetadata,
@@ -145,10 +259,7 @@ pub struct Route {
 
 impl Route {
     /// Creates new Route, tries to parse path into RouteMetadata.
-    pub fn new<P>(
-        path: P,
-        handler: BoxCloneService<Request<Body>, Response>,
-    ) -> anyhow::Result<Self>
+    pub fn new<P>(path: P, handler: BoxCloneService<Request<Body>>) -> anyhow::Result<Self>
     where
         P: Into<String>,
     {
@@ -215,7 +326,7 @@ pub struct RouteMetadata {
 
     /// Holds params' segments index counted as place after '/' character.
     ///
-    /// `/test/<param1>/<param2>` -{ 0: 1, 1: 2 }.
+    /// `/test/<param1>/<param2>` - { 0: 1, 1: 2 }.
     pub param_segments: HashMap<usize, usize>,
 }
 

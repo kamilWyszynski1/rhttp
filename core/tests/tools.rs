@@ -1,26 +1,24 @@
 use core::{
     handler::{BoxCloneService, Service},
     response::{body_to_bytes, Response},
-    route::{Route, RouteGroup},
+    route::{Route, RouteGroup, Router},
     server::Server,
 };
 use hyper::{Body, Method, Request};
 use std::collections::HashMap;
 
-struct Client {
-    server: Server,
+struct Client<V> {
+    server: Server<V>,
 }
 
-impl Client {
-    fn new(routes: HashMap<Method, Vec<Route>>) -> anyhow::Result<Self> {
-        Ok(Self {
-            server: Server::new_with_routes(routes),
-        })
-    }
-
-    fn groups(mut self, groups: Vec<RouteGroup>) -> Self {
-        self.server = self.server.groups(groups);
-        self
+impl<V> Client<V>
+where
+    V: Service<Request<Body>> + Send + Sync + 'static,
+{
+    fn new(service: V) -> Self {
+        Self {
+            server: Server::new("", 0).with_service(service),
+        }
     }
 
     fn send(&self, request: Request<Body>) -> anyhow::Result<Response> {
@@ -28,36 +26,33 @@ impl Client {
     }
 }
 
-pub struct TestCaseBuilder {
+pub struct TestCaseBuilder<V> {
     name: Option<String>,
-
-    /// Path for registered handler.
-    path: String,
+    service: V,
 
     /// Url of a request.
     url: String,
     method: Method,
-    handler: BoxCloneService<Request<Body>, Response>,
-    groups: Option<Vec<RouteGroup>>,
 
     body: Option<Body>,
     headers: Option<HashMap<String, String>>,
     result: Option<Vec<u8>>,
 }
 
-impl TestCaseBuilder {
-    pub fn new<T, V>(path: T, url: T, method: Method, service: V) -> Self
+impl<V> TestCaseBuilder<V>
+where
+    V: Service<Request<Body>> + Send + Sync + 'static,
+{
+    pub fn new<T>(url: T, method: Method, service: V) -> Self
     where
         T: ToString,
-        V: Service<Request<Body>, Response = Response> + Send + Sync + 'static,
+        V: Service<Request<Body>> + Send + Sync + 'static,
     {
         Self {
             name: None,
-            path: path.to_string(),
             url: url.to_string(),
             method,
-            handler: BoxCloneService::new(service),
-            groups: None,
+            service,
             headers: None,
             body: None,
             result: None,
@@ -79,19 +74,14 @@ impl TestCaseBuilder {
         self
     }
 
-    pub fn header<K, V>(mut self, key: K, value: V) -> Self
+    pub fn header<K, L>(mut self, key: K, value: L) -> Self
     where
         K: ToString,
-        V: ToString,
+        L: ToString,
     {
         let mut m = self.headers.unwrap_or_default();
         m.insert(key.to_string(), value.to_string());
         self.headers = Some(m);
-        self
-    }
-
-    pub fn groups(mut self, groups: Vec<RouteGroup>) -> Self {
-        self.groups = Some(groups);
         self
     }
 
@@ -104,18 +94,19 @@ impl TestCaseBuilder {
 
         let req = builder.body(self.body.unwrap_or_default())?;
 
-        let route = Route::new(self.path, self.handler)?;
-        let client: Client = Client::new(HashMap::from([(self.method, vec![route])]))?
-            .groups(self.groups.unwrap_or_default());
+        let client = Client::new(self.service);
 
         let res: Response = client.send(req)?;
         let body_bytes: Vec<u8> = body_to_bytes(res.into_body())?.into();
 
+        let res = self.result.unwrap_or_default().to_vec();
         assert_eq!(
             body_bytes,
-            self.result.unwrap_or_default(),
-            "test case {}",
-            self.name.unwrap_or_default()
+            res,
+            "test case {}, left: {}, right: {}",
+            self.name.unwrap_or_default(),
+            std::str::from_utf8(&body_bytes).unwrap(),
+            std::str::from_utf8(&res).unwrap()
         );
 
         Ok(())

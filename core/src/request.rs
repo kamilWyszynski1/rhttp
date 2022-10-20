@@ -169,12 +169,12 @@ impl PathParamOrdering {
 ///
 /// ```
 /// use core::request::PathParam;
-/// use core::server::Server;
+/// use core::route::Router;
 /// use crate::core::handler::HandlerTraitWithoutState;
 ///
 /// fn handler(PathParam(name): PathParam<String>) {}
 ///
-/// Server::new("127.0.0.1", 8080).get("/<name>", handler.into_service());
+/// Router::new().get("/<name>", handler);
 /// ```
 pub struct PathParam<T>(pub T);
 
