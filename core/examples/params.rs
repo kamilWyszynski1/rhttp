@@ -1,8 +1,9 @@
 use anyhow::Context;
-use core::handler::HandlerTraitWithoutState;
 use core::request::ContentType;
 use core::request::Json;
+use core::request::State;
 use core::response::Responder;
+use core::route::Router;
 use core::server::Server;
 use hyper::Body;
 use hyper::Request;
@@ -42,13 +43,17 @@ fn main() -> anyhow::Result<()> {
         Ok(content_type)
     }
 
-    Server::new("127.0.0.1", 8080)
-        .get("/test/<param1>", handler.into_service())
-        .get("/dupa/<param>", handler3.into_service())
-        .get("/", handler4.into_service())
-        .get("/json", handler5.into_service())
-        .get("/header", handler_header.into_service())
-        .post("/body", handler5.into_service())
-        .get("/closure", handler.into_service())
-        .run()
+    fn handler_state(_state: State<i32>) {}
+
+    let app = Router::with_state(123)
+        .get("/test/<param1>", handler)
+        .get("/dupa/<param>", handler3)
+        .get("/", handler4)
+        .get("/json", handler5)
+        .get("/header", handler_header)
+        .post("/body", handler5)
+        .get("/closure", handler)
+        .get("/state", handler_state);
+
+    Server::new("127.0.0.1", 8080).with_service(app).run()
 }

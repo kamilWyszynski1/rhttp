@@ -49,13 +49,13 @@ pub fn response_to_bytes(response: Response) -> anyhow::Result<Vec<u8>> {
 /// Responder implementation for '()', returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// use core::server::Server;
+/// use core::route::Router;
 /// use hyper::Request;
 /// use crate::core::handler::HandlerTraitWithoutState;
 ///
 /// fn handler() {}
 ///
-/// Server::new("127.0.0.1", 8080).get("/", handler.into_service());
+/// Router::default().get("/", handler);
 /// ```
 impl Responder for () {
     fn into_response(self) -> anyhow::Result<Response> {
@@ -73,7 +73,7 @@ impl Responder for Response {
 /// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// use core::server::Server;
+/// use core::route::Router;
 /// use hyper::Request;
 /// use crate::core::handler::HandlerTraitWithoutState;
 ///
@@ -81,7 +81,7 @@ impl Responder for Response {
 ///     "hello"
 /// }
 ///
-/// Server::new("127.0.0.1", 8080).get("/", handler.into_service());
+/// Router::default().get("/", handler);
 ///
 /// ```
 impl<'a> Responder for &'a str {
@@ -93,7 +93,7 @@ impl<'a> Responder for &'a str {
 /// Returns Response with stringified self as a body, returns default Response (200, HTTP1.1).
 ///
 /// ```rust
-/// use core::server::Server;
+/// use core::route::Router;
 /// use hyper::Request;
 /// use crate::core::handler::HandlerTraitWithoutState;
 ///
@@ -101,7 +101,7 @@ impl<'a> Responder for &'a str {
 ///     "hello".into()
 /// }
 ///
-/// Server::new("127.0.0.1", 8080).get("/", handler.into_service());
+/// Router::default().get("/", handler);
 /// ```
 impl Responder for String {
     fn into_response(self) -> anyhow::Result<Response> {
