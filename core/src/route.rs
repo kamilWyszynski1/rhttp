@@ -1,13 +1,14 @@
 use crate::{
-    handler::{BoxCloneService, HandlerTrait, IntoService, Service},
+    handler::{BoxCloneService, HandlerTrait, Service},
     middleware::Middleware,
-    response::{self, Response},
+    response::Response,
 };
 use anyhow::{bail, Context};
 use hyper::{Body, Method, Request};
 use std::{collections::HashMap, sync::Arc};
 
 /// Main entity that delegates all routing in an application.
+#[derive(Clone)]
 pub struct Router<S> {
     state: Arc<S>,
     routes: HashMap<Method, Vec<Route>>,
@@ -19,7 +20,7 @@ pub struct Router<S> {
 }
 
 impl Router<()> {
-    pub fn new() -> Self {
+    pub fn default() -> Self {
         Self::with_state(())
     }
 }
@@ -131,7 +132,7 @@ impl<S> Service<Request<Body>> for Router<S> {
 /// let v1 = RouteGroup::new("/v1").get("/user", (|| "v1").into_service());
 /// let v2 = RouteGroup::new("/v2").get("/user", (|| "v2").into_service());
 ///
-/// Router::new().groups(vec![v1, v2]);
+/// Router::default().groups(vec![v1, v2]);
 /// ```
 #[derive(Clone)]
 pub struct RouteGroup {

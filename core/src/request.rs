@@ -174,7 +174,7 @@ impl PathParamOrdering {
 ///
 /// fn handler(PathParam(name): PathParam<String>) {}
 ///
-/// Router::new().get("/<name>", handler);
+/// Router::default().get("/<name>", handler);
 /// ```
 pub struct PathParam<T>(pub T);
 

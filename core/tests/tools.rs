@@ -1,7 +1,6 @@
 use core::{
-    handler::{BoxCloneService, Service},
+    handler::Service,
     response::{body_to_bytes, Response},
-    route::{Route, RouteGroup, Router},
     server::Server,
 };
 use hyper::{Body, Method, Request};

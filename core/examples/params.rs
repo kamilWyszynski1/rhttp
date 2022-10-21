@@ -1,6 +1,4 @@
 use anyhow::Context;
-use core::handler::HandlerTrait;
-use core::handler::HandlerTraitWithoutState;
 use core::request::ContentType;
 use core::request::Json;
 use core::request::State;
@@ -45,7 +43,7 @@ fn main() -> anyhow::Result<()> {
         Ok(content_type)
     }
 
-    fn handler_state(state: State<i32>) {}
+    fn handler_state(_state: State<i32>) {}
 
     let app = Router::with_state(123)
         .get("/test/<param1>", handler)

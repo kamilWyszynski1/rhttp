@@ -66,13 +66,13 @@ pub trait HandlerTrait<Q, S = ()>: Sized + Send + Sync + 'static {
 }
 
 /// Helper trait for implementing handler that does not use state.
-pub trait HandlerTraitWithoutState<Q, B>: HandlerTrait<Q, ()> {
+pub trait HandlerTraitWithoutState<Q>: HandlerTrait<Q, ()> {
     fn into_service(self) -> IntoService<Self, (), Q> {
         self.into_service_with_state(())
     }
 }
 
-impl<Q, B, H> HandlerTraitWithoutState<Q, B> for H where H: HandlerTrait<Q> {}
+impl<Q, H> HandlerTraitWithoutState<Q> for H where H: HandlerTrait<Q> {}
 
 macro_rules! implement_handler_trait {
     ([$($ty:ident),*], $last:ident) => {

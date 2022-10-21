@@ -55,7 +55,7 @@ pub fn response_to_bytes(response: Response) -> anyhow::Result<Vec<u8>> {
 ///
 /// fn handler() {}
 ///
-/// Router::new().get("/", handler);
+/// Router::default().get("/", handler);
 /// ```
 impl Responder for () {
     fn into_response(self) -> anyhow::Result<Response> {
@@ -81,7 +81,7 @@ impl Responder for Response {
 ///     "hello"
 /// }
 ///
-/// Router::new().get("/", handler);
+/// Router::default().get("/", handler);
 ///
 /// ```
 impl<'a> Responder for &'a str {
@@ -101,7 +101,7 @@ impl<'a> Responder for &'a str {
 ///     "hello".into()
 /// }
 ///
-/// Router::new().get("/", handler);
+/// Router::default().get("/", handler);
 /// ```
 impl Responder for String {
     fn into_response(self) -> anyhow::Result<Response> {
